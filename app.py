@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- GERENCIAMENTO DE ESTADO (MEMÓRIA DE NAVEGAÇÃO) ---
+# --- GERENCIAMENTO DE ESTADO ---
 if 'pagina_atual' not in st.session_state:
     st.session_state.pagina_atual = 'login'
 if 'logado' not in st.session_state:
@@ -37,11 +37,10 @@ def get_connection():
         st.error(f"Erro detalhado de conexão: {e}")
         return None
 
-# --- FUNÇÃO PARA EXECUTAR COMANDOS NO BANCO ---
+# --- FUNÇÃO PARA EXECUTAR COMANDOS ---
 def executar_query(query, params=None, fetch=False):
     conn = get_connection()
     if conn is None:
-        st.error("Erro de conexão: Verifique se o PostgreSQL está ligado.")
         return [] if fetch else False
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -55,25 +54,22 @@ def executar_query(query, params=None, fetch=False):
         conn.close()
         return resultado
     except Exception as e:
-        st.error(f"Erro na execução do banco: {e}")
+        st.error(f"Erro no banco: {e}")
         return [] if fetch else False
 
 # --- FUNÇÃO PARA EXIBIR LOGO ---
 def mostrar_logo():
-    # Tenta mostrar a logo se o arquivo existir, senão mostra apenas texto
     if os.path.exists("logoser.jpg"):
         st.image("logoser.jpg", width=200)
-    else:
-        # Se você ainda não subiu a logo, não quebra o app
-        pass
+    elif os.path.exists("logo.png"):
+        st.image("logo.png", width=200)
 
 # ==========================================
-# TELA 1: LOGIN (PORTA DE ENTRADA)
+# TELA 1: LOGIN
 # ==========================================
 def tela_login():
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        # Tenta mostrar a logo centralizada
         col_img1, col_img2, col_img3 = st.columns([1,2,1])
         with col_img2:
             mostrar_logo()
@@ -97,7 +93,7 @@ def tela_login():
                     else:
                         st.error("Usuário ou senha incorretos.")
                 except KeyError:
-                    st.error("Erro: Configure [admin] usuario e senha nos Secrets do Streamlit.")
+                    st.error("Erro: Configure [admin] nos Secrets.")
 
         st.markdown("---")
         st.info("É aluno novo? Faça seu cadastro por aqui.")
@@ -106,7 +102,7 @@ def tela_login():
             st.rerun()
 
 # ==========================================
-# TELA 2: AUTO-CADASTRO (PÚBLICA PARA ALUNOS)
+# TELA 2: AUTO-CADASTRO
 # ==========================================
 def tela_cadastro_aluno():
     st.button("⬅️ Voltar para Login", on_click=lambda: st.session_state.update({'pagina_atual': 'login'}))
@@ -122,8 +118,12 @@ def tela_cadastro_aluno():
         st.markdown("### 1. Dados Pessoais")
         col1, col2 = st.columns(2)
         nome_auto = col1.text_input("Nome Completo *")
-        # DATA FORMATADA DD/MM/AAAA
-        nasc_auto = col1.date_input("Data de Nascimento", value=date(2000, 1, 1), format="DD/MM/YYYY")
+        
+        nasc_auto = col1.date_input("Data de Nascimento", 
+                                    value=date(2000, 1, 1), 
+                                    min_value=date(1920, 1, 1), 
+                                    max_value=date.today(),
+                                    format="DD/MM/YYYY")
         
         col_tel, col_resp = st.columns(2)
         tel_auto = col_tel.text_input("WhatsApp (com DDD) *")
@@ -132,23 +132,13 @@ def tela_cadastro_aluno():
         st.divider()
         st.markdown("### 2. Graduação Atual")
         
-        # LÓGICA DE DATAS INTELIGENTE
         c_faixa, c_graus = st.columns(2)
         faixa_auto = c_faixa.selectbox("Qual sua Faixa?", ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde", "Azul", "Roxa", "Marrom", "Preta"])
-        # step=1 garante que é numero inteiro
         graus_auto = c_graus.number_input("Quantos Graus na faixa?", 0, 10, 0, step=1)
         
         c_dt_faixa, c_dt_grau = st.columns(2)
-        # Pergunta data da faixa (Obrigatório)
         data_faixa_auto = c_dt_faixa.date_input("Quando pegou essa FAIXA?", value=date.today(), format="DD/MM/YYYY")
-        
-        # Lógica: Se tem graus, pergunta data do grau. Se não tem, data do grau = data da faixa
-        if graus_auto > 0:
-            data_grau_auto = c_dt_grau.date_input("Quando pegou esse GRAU?", value=date.today(), format="DD/MM/YYYY")
-        else:
-            # Se não tem grau, a data do ultimo grau é a mesma da faixa (visualmente desativado ou escondido, aqui apenas assumimos a logica no backend)
-            st.info("Como você não tem graus, usaremos a data da faixa como referência.")
-            data_grau_auto = data_faixa_auto
+        data_grau_auto = c_dt_grau.date_input("Quando pegou o último GRAU? (Se tiver)", value=date.today(), format="DD/MM/YYYY")
 
         st.divider()
         st.markdown("### 3. Treinos")
@@ -160,15 +150,20 @@ def tela_cadastro_aluno():
         
         if submitted:
             if nome_auto and tel_auto and turma_auto != "Nenhuma disponível":
-                id_t_auto = op_t_auto.get(turma_auto)
                 
-                # Validação lógica básica de datas
-                if graus_auto > 0 and data_grau_auto < data_faixa_auto:
-                    st.error("Erro: A data do Grau não pode ser anterior à data da Faixa!")
+                existe = executar_query("SELECT id FROM alunos WHERE nome = %s AND telefone = %s", (nome_auto, tel_auto), fetch=True)
+                
+                if existe:
+                    st.error("⚠️ Atenção: Já existe um aluno cadastrado com esse Nome e Telefone!")
                 else:
+                    id_t_auto = op_t_auto.get(turma_auto)
+                    dt_grau_final = data_grau_auto if graus_auto > 0 else data_faixa_auto
+
                     q_auto = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, id_turma, nome_responsavel, telefone, status_aluno, data_faixa, data_ultimo_grau) 
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', %s, %s)"""
-                    executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_auto, data_faixa_auto, data_grau_auto))
+                    
+                    executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_auto, data_faixa_auto, dt_grau_final))
+                    
                     st.balloons()
                     st.success(f"OSS! Cadastro de {nome_auto} realizado com sucesso!")
                     time.sleep(3)
@@ -178,7 +173,7 @@ def tela_cadastro_aluno():
                 st.error("Erro: Nome, Telefone e Turma são obrigatórios.")
 
 # ==========================================
-# TELA 3: SISTEMA PRINCIPAL (RESTRITA AO ADMIN)
+# TELA 3: SISTEMA PRINCIPAL
 # ==========================================
 def sistema_principal():
     with st.sidebar:
@@ -208,13 +203,39 @@ def sistema_principal():
         except:
             total_alunos = 0
             niver_hoje = []
-            st.warning("Tabelas não encontradas. Verifique as configurações.")
+            st.warning("Tabelas não encontradas.")
 
         col_m1, col_m2 = st.columns(2)
         col_m1.metric("Total de Atletas Ativos", total_alunos)
         col_m2.metric("Aniversariantes de Hoje", len(niver_hoje) if niver_hoje else 0)
+        
         st.divider()
 
+        # === GRÁFICOS E TABELA DE RESUMO (RESTAURADOS) ===
+        col_graf, col_tab = st.columns([2, 1])
+        
+        with col_graf:
+            st.subheader("📊 Distribuição por Faixas")
+            dados_f = executar_query("SELECT faixa, COUNT(*) as total FROM alunos GROUP BY faixa;", fetch=True)
+            if dados_f:
+                df_g = pd.DataFrame(dados_f, columns=['faixa', 'total'])
+                ordem_faixas = ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde", "Azul", "Roxa", "Marrom", "Preta"]
+                df_g['faixa'] = pd.Categorical(df_g['faixa'], categories=ordem_faixas, ordered=True)
+                df_g = df_g.sort_values('faixa')
+                st.bar_chart(df_g.set_index('faixa'))
+            else:
+                st.info("Sem dados para exibir o gráfico.")
+
+        with col_tab:
+            st.subheader("📋 Resumo Numérico")
+            if dados_f:
+                # Mostra a mesma informação do gráfico, mas em tabela
+                st.dataframe(df_g[['faixa', 'total']].style.hide(axis="index"), use_container_width=True)
+
+        st.divider()
+
+        # === ALERTAS DE GRADUAÇÃO ===
+        st.subheader("🎓 Análise de Graduação")
         alunos_analise = executar_query("""
             SELECT a.id, a.nome, a.faixa, a.graus, a.data_faixa, a.data_ultimo_grau, 
             (SELECT COUNT(*) FROM presencas WHERE id_aluno = a.id) as aulas
@@ -230,28 +251,24 @@ def sistema_principal():
                 dt_grau = alu['data_ultimo_grau'] or dt_faixa
                 meses_faixa = (hoje - dt_faixa).days // 30
                 meses_grau = (hoje - dt_grau).days // 30
-                anos_grau = (hoje - dt_grau).days // 365
                 
+                # Regras Simplificadas
                 if alu['faixa'] in ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde"]:
                     if alu['aulas'] >= 8 and meses_faixa >= 6:
                         lista_apto_exame.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Aulas": alu['aulas']})
                 elif alu['faixa'] in ["Azul", "Roxa", "Marrom"]:
                     if meses_grau >= 6:
                         lista_apto_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Graus Atual": alu['graus']})
-                elif alu['faixa'] == "Preta":
-                    if (alu['graus'] <= 3 and anos_grau >= 3) or (alu['graus'] >= 4 and anos_grau >= 5):
-                        lista_apto_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Graus Atual": alu['graus']})
 
         if lista_apto_exame or lista_apto_grau:
-            st.subheader("🚨 Alunos Aptos para Graduação")
             if lista_apto_exame:
-                st.warning(f"Exame de Faixa: {len(lista_apto_exame)} aluno(s)")
+                st.warning(f"🚨 Exame de Faixa: {len(lista_apto_exame)} aluno(s)")
                 st.dataframe(pd.DataFrame(lista_apto_exame), use_container_width=True, hide_index=True)
             if lista_apto_grau:
-                st.info(f"Novos Graus: {len(lista_apto_grau)} aluno(s)")
+                st.info(f"🆙 Novos Graus: {len(lista_apto_grau)} aluno(s)")
                 st.dataframe(pd.DataFrame(lista_apto_grau), use_container_width=True, hide_index=True)
         else:
-            st.success("Todos os alunos estão com a graduação em dia!")
+            st.success("✅ Todos os alunos estão com a graduação em dia!")
 
     # --- ABA 2: GESTÃO DE ALUNOS ---
     with tab_gestao:
