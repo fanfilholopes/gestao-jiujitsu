@@ -14,19 +14,24 @@ st.set_page_config(
 # --- CONEXÃO COM O BANCO DE DADOS ---
 def get_connection():
     try:
-        # Tenta conectar usando a URL completa que é mais robusta
-        conn = psycopg2.connect(st.secrets["postgres"]["url"])
+        # Tenta conectar usando a URL completa configurada nos Secrets
+        # Essa é a forma mais robusta para o Supabase no Streamlit Cloud
+        if "url" in st.secrets["postgres"]:
+            conn = psycopg2.connect(st.secrets["postgres"]["url"])
+        else:
+            # Fallback caso a pessoa tenha configurado do jeito antigo (host, user, etc)
+            conn = psycopg2.connect(
+                host=st.secrets["postgres"]["host"],
+                database=st.secrets["postgres"]["database"],
+                user=st.secrets["postgres"]["user"],
+                password=st.secrets["postgres"]["password"],
+                port=st.secrets["postgres"]["port"]
+            )
         return conn
     except Exception as e:
-        st.error(f"Erro detalhado: {e}") # Isso vai nos mostrar o erro real na tela
-        try:
-            conn = psycopg2.connect(
-                host="localhost", database="jiujitsu_db",
-                user="postgres", password="1178", port="5432"
-            )
-            return conn
-        except:
-            return None
+        # Mostra o erro real na tela para facilitar o debug
+        st.error(f"Erro detalhado de conexão: {e}")
+        return None
 
 # --- FUNÇÃO PARA EXECUTAR COMANDOS NO BANCO ---
 def executar_query(query, params=None, fetch=False):
@@ -62,17 +67,23 @@ with tab_dash:
     st.header("Visão Geral")
     hoje = date.today()
     
-    res_total = executar_query("SELECT COUNT(*) FROM alunos WHERE status_aluno = 'Ativo';", fetch=True)
-    total_alunos = res_total[0][0] if res_total else 0
-    
-    niver_hoje = executar_query(
-        "SELECT nome FROM alunos WHERE EXTRACT(MONTH FROM data_nascimento) = %s AND EXTRACT(DAY FROM data_nascimento) = %s;",
-        (hoje.month, hoje.day), fetch=True
-    )
+    # Verifica se a tabela existe antes de contar (evita erro no primeiro load)
+    try:
+        res_total = executar_query("SELECT COUNT(*) FROM alunos WHERE status_aluno = 'Ativo';", fetch=True)
+        total_alunos = res_total[0][0] if res_total else 0
+        
+        niver_hoje = executar_query(
+            "SELECT nome FROM alunos WHERE EXTRACT(MONTH FROM data_nascimento) = %s AND EXTRACT(DAY FROM data_nascimento) = %s;",
+            (hoje.month, hoje.day), fetch=True
+        )
+    except:
+        total_alunos = 0
+        niver_hoje = []
+        st.warning("As tabelas ainda não foram encontradas. Vá em Configurações para iniciar.")
 
     col_m1, col_m2 = st.columns(2)
     col_m1.metric("Total de Atletas Ativos", total_alunos)
-    col_m2.metric("Aniversariantes de Hoje", len(niver_hoje))
+    col_m2.metric("Aniversariantes de Hoje", len(niver_hoje) if niver_hoje else 0)
 
     st.divider()
 
@@ -137,7 +148,6 @@ with tab_dash:
             df_g['faixa'] = pd.Categorical(df_g['faixa'], categories=ordem_faixas, ordered=True)
             df_g = df_g.sort_values('faixa')
             st.bar_chart(df_g.set_index('faixa'))
-            st.dataframe(df_g, hide_index=True, use_container_width=True)
 
 # --- TELA 2: GESTÃO DE ALUNOS ---
 with tab_gestao:
@@ -236,7 +246,7 @@ with tab_auto:
             if nome_auto and turma_auto != "Nenhuma disponível":
                 id_t_auto = op_t_auto.get(turma_auto)
                 q_auto = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, id_turma, nome_responsavel, telefone, status_aluno, data_faixa, data_ultimo_grau) 
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', CURRENT_DATE, CURRENT_DATE)"""
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', CURRENT_DATE, CURRENT_DATE)"""
                 executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_auto))
                 st.success("OSS! Cadastro realizado. Bem-vindo à SER Jiu-Jítsu Team!")
             else:
