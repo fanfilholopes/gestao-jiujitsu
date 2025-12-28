@@ -116,9 +116,14 @@ def tela_cadastro_aluno():
         tel_auto = col_tel.text_input("WhatsApp (com DDD) *")
         resp_auto = col_resp.text_input("Nome do Responsável (se menor de idade)")
         
-        col3, col4 = st.columns(2)
+        st.divider()
+        st.markdown("### Dados da Graduação")
+        # MUDANÇA AQUI: Adicionei uma terceira coluna para a Data da Faixa
+        col3, col4, col5 = st.columns(3)
         faixa_auto = col3.selectbox("Faixa Atual", ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde", "Azul", "Roxa", "Marrom", "Preta"])
         graus_auto = col4.number_input("Graus na Faixa Atual", 0, 10, 0)
+        # NOVA PERGUNTA:
+        data_grad_auto = col5.date_input("Desde quando é dessa faixa?", value=date.today())
         
         # Busca turmas no banco
         t_auto_db = executar_query("SELECT id, nome_turma FROM turmas;", fetch=True)
@@ -130,9 +135,12 @@ def tela_cadastro_aluno():
         if submitted:
             if nome_auto and tel_auto and turma_auto != "Nenhuma disponível":
                 id_t_auto = op_t_auto.get(turma_auto)
+                # MUDANÇA NO SQL: Usamos a data escolhida (%s) em vez de CURRENT_DATE
                 q_auto = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, id_turma, nome_responsavel, telefone, status_aluno, data_faixa, data_ultimo_grau) 
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', CURRENT_DATE, CURRENT_DATE)"""
-                executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_auto))
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', %s, %s)"""
+                # Passamos data_grad_auto duas vezes (para data_faixa e data_ultimo_grau)
+                executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_auto, data_grad_auto, data_grad_auto))
+                
                 st.balloons()
                 st.success(f"OSS! Cadastro de {nome_auto} realizado com sucesso! Bem-vindo à SER Jiu-Jítsu.")
                 time.sleep(3) # Espera 3 segundos para ler
@@ -277,13 +285,13 @@ def sistema_principal():
                     st.success("Cadastrado com sucesso!")
                     st.rerun()
         else:
-            # --- CORREÇÃO AQUI: ADICIONADO data_nascimento ---
+            # Lista com data de nascimento incluída
             dados = executar_query("SELECT id, nome, data_nascimento, faixa, graus, data_faixa, data_ultimo_grau, nome_responsavel, telefone FROM alunos ORDER BY nome", fetch=True)
             
             if dados:
                 df_e = pd.DataFrame(dados, columns=['ID', 'Nome', 'Nascimento', 'Faixa', 'Graus', 'Data Faixa', 'Data Último Grau', 'Responsável', 'Telefone'])
                 
-                # Configura a coluna de Nascimento para aparecer bonita (DD/MM/YYYY)
+                # Configura a coluna de Nascimento e datas para aparecer bonita (DD/MM/YYYY)
                 df_up = st.data_editor(
                     df_e, 
                     use_container_width=True, 
