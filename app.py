@@ -277,16 +277,31 @@ def sistema_principal():
                     st.success("Cadastrado com sucesso!")
                     st.rerun()
         else:
-            dados = executar_query("SELECT id, nome, faixa, graus, data_faixa, data_ultimo_grau, nome_responsavel, telefone FROM alunos ORDER BY nome", fetch=True)
+            # --- CORREÇÃO AQUI: ADICIONADO data_nascimento ---
+            dados = executar_query("SELECT id, nome, data_nascimento, faixa, graus, data_faixa, data_ultimo_grau, nome_responsavel, telefone FROM alunos ORDER BY nome", fetch=True)
+            
             if dados:
-                df_e = pd.DataFrame(dados, columns=['ID', 'Nome', 'Faixa', 'Graus', 'Data Faixa', 'Data Último Grau', 'Responsável', 'Telefone'])
-                df_up = st.data_editor(df_e, use_container_width=True, hide_index=True, key="editor_alunos")
+                df_e = pd.DataFrame(dados, columns=['ID', 'Nome', 'Nascimento', 'Faixa', 'Graus', 'Data Faixa', 'Data Último Grau', 'Responsável', 'Telefone'])
+                
+                # Configura a coluna de Nascimento para aparecer bonita (DD/MM/YYYY)
+                df_up = st.data_editor(
+                    df_e, 
+                    use_container_width=True, 
+                    hide_index=True, 
+                    key="editor_alunos",
+                    column_config={
+                        "Nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"),
+                        "Data Faixa": st.column_config.DateColumn("Data Faixa", format="DD/MM/YYYY"),
+                        "Data Último Grau": st.column_config.DateColumn("Data Último Grau", format="DD/MM/YYYY")
+                    }
+                )
                 
                 if st.button("💾 Salvar Alterações da Tabela"):
                     for _, r in df_up.iterrows():
-                        q_up = """UPDATE alunos SET nome=%s, faixa=%s, graus=%s, data_faixa=%s, data_ultimo_grau=%s, nome_responsavel=%s, telefone=%s WHERE id=%s"""
-                        executar_query(q_up, (r['Nome'], r['Faixa'], r['Graus'], r['Data Faixa'], r['Data Último Grau'], r['Responsável'], r['Telefone'], r['ID']))
-                    st.success("Tabela atualizada!")
+                        q_up = """UPDATE alunos SET nome=%s, data_nascimento=%s, faixa=%s, graus=%s, data_faixa=%s, data_ultimo_grau=%s, nome_responsavel=%s, telefone=%s WHERE id=%s"""
+                        executar_query(q_up, (r['Nome'], r['Nascimento'], r['Faixa'], r['Graus'], r['Data Faixa'], r['Data Último Grau'], r['Responsável'], r['Telefone'], r['ID']))
+                    st.success("Tabela atualizada com sucesso!")
+                    time.sleep(1)
                     st.rerun()
 
                 st.divider()
