@@ -14,18 +14,11 @@ st.set_page_config(
 # --- CONEXÃO COM O BANCO DE DADOS ---
 def get_connection():
     try:
-        # Busca os dados de conexão das configurações seguras do Streamlit
-        conn = psycopg2.connect(
-            host=st.secrets["postgres"]["host"],
-            database=st.secrets["postgres"]["database"],
-            user=st.secrets["postgres"]["user"],
-            password=st.secrets["postgres"]["password"],
-            port=st.secrets["postgres"]["port"],
-            client_encoding='utf8'
-        )
+        # Tenta conectar usando a URL completa que é mais robusta
+        conn = psycopg2.connect(st.secrets["postgres"]["url"])
         return conn
     except Exception as e:
-        # Se falhar (como no seu PC), ele tenta usar o local
+        st.error(f"Erro detalhado: {e}") # Isso vai nos mostrar o erro real na tela
         try:
             conn = psycopg2.connect(
                 host="localhost", database="jiujitsu_db",
