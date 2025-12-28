@@ -14,17 +14,26 @@ st.set_page_config(
 # --- CONEXÃO COM O BANCO DE DADOS ---
 def get_connection():
     try:
+        # Busca os dados de conexão das configurações seguras do Streamlit
         conn = psycopg2.connect(
-            host="localhost",
-            database="jiujitsu_db",
-            user="postgres",
-            password="1178", 
-            port="5432",
+            host=st.secrets["postgres"]["host"],
+            database=st.secrets["postgres"]["database"],
+            user=st.secrets["postgres"]["user"],
+            password=st.secrets["postgres"]["password"],
+            port=st.secrets["postgres"]["port"],
             client_encoding='utf8'
         )
         return conn
-    except Exception:
-        return None
+    except Exception as e:
+        # Se falhar (como no seu PC), ele tenta usar o local
+        try:
+            conn = psycopg2.connect(
+                host="localhost", database="jiujitsu_db",
+                user="postgres", password="1178", port="5432"
+            )
+            return conn
+        except:
+            return None
 
 # --- FUNÇÃO PARA EXECUTAR COMANDOS NO BANCO ---
 def executar_query(query, params=None, fetch=False):
