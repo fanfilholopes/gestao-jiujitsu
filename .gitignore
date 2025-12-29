@@ -1,0 +1,6 @@
+# Ignorar arquivos de configuração do Streamlit (Senhas)
+.streamlit/secrets.toml
+
+# Ignorar arquivos temporários do Python
+__pycache__/
+*.pyc
