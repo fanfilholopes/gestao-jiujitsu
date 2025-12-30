@@ -3,7 +3,7 @@ import psycopg2
 import psycopg2.extras
 import pandas as pd
 import plotly.express as px
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import time
 import os
 
@@ -19,6 +19,8 @@ if 'pagina_atual' not in st.session_state:
     st.session_state.pagina_atual = 'login'
 if 'logado' not in st.session_state:
     st.session_state.logado = False
+if 'aluno_id' not in st.session_state:
+    st.session_state.aluno_id = None
 
 # --- CONEXÃO COM O BANCO DE DADOS ---
 def get_connection():
@@ -38,7 +40,7 @@ def get_connection():
         st.error(f"Erro detalhado de conexão: {e}")
         return None
 
-# --- FUNÇÃO PARA EXECUTAR COMANDOS (CORRIGIDA) ---
+# --- FUNÇÃO PARA EXECUTAR COMANDOS ---
 def executar_query(query, params=None, fetch=False):
     conn = get_connection()
     if conn is None:
@@ -67,26 +69,13 @@ def executar_query(query, params=None, fetch=False):
 def carregar_dados_dashboard():
     hoje = date.today()
     try:
-        # Total Alunos
         res_total = executar_query("SELECT COUNT(*) FROM alunos WHERE status_aluno = 'Ativo';", fetch=True)
         total_alunos = res_total[0][0] if res_total else 0
-        
-        # Aniversariantes
         niver_mes = executar_query("SELECT nome, EXTRACT(DAY FROM data_nascimento) as dia FROM alunos WHERE EXTRACT(MONTH FROM data_nascimento) = %s ORDER BY dia;", (hoje.month,), fetch=True)
-        
-        # Dados Gráfico Faixas
         dados_faixa = executar_query("SELECT faixa, COUNT(*) as total FROM alunos WHERE status_aluno = 'Ativo' GROUP BY faixa;", fetch=True)
-        
-        # Dados Gráfico Frequência
         data_limite = hoje - timedelta(days=7)
-        dados_freq = executar_query("""
-            SELECT data_aula, COUNT(*) as total 
-            FROM presencas 
-            WHERE data_aula >= %s 
-            GROUP BY data_aula 
-            ORDER BY data_aula
-        """, (data_limite,), fetch=True)
-
+        dados_freq = executar_query("SELECT data_aula, COUNT(*) as total FROM presencas WHERE data_aula >= %s GROUP BY data_aula ORDER BY data_aula", (data_limite,), fetch=True)
+        
         return total_alunos, niver_mes, dados_faixa, dados_freq
     except:
         return 0, [], [], []
@@ -97,6 +86,10 @@ def calcular_idade(nascimento):
     hoje = date.today()
     return hoje.year - nascimento.year - ((hoje.month, hoje.day) < (nascimento.month, nascimento.day))
 
+# --- HELPER: EXPORTAR CSV ---
+def converter_df_para_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
 # --- FUNÇÃO PARA EXIBIR LOGO ---
 def mostrar_logo():
     if os.path.exists("logoser.jpg"):
@@ -105,32 +98,15 @@ def mostrar_logo():
         st.image("logo.png", width=200)
 
 # ==========================================
-# TELA 1: LOGIN (LAYOUT HORIZONTAL)
+# TELA 1: LOGIN
 # ==========================================
 def tela_login():
     st.markdown("""
         <style>
-        .block-container {
-            padding-top: 3rem;
-            padding-bottom: 2rem;
-        }
-        [data-testid="stImage"] {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-        }
-        [data-testid="stImage"] > img {
-            max-width: 100%;
-            height: auto;
-            object-fit: contain;
-        }
-        .title-container {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            height: 100%;
-        }
+        .block-container { padding-top: 3rem; padding-bottom: 2rem; }
+        [data-testid="stImage"] { display: flex; align-items: center; justify-content: center; height: 100%; }
+        [data-testid="stImage"] > img { max-width: 100%; height: auto; object-fit: contain; }
+        .title-container { display: flex; flex-direction: column; justify-content: center; height: 100%; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -138,15 +114,9 @@ def tela_login():
     
     with c2:
         col_img_header, col_text_header = st.columns([1, 3])
-        with col_img_header:
-            mostrar_logo()
+        with col_img_header: mostrar_logo()
         with col_text_header:
-            st.markdown("""
-                <div class="title-container">
-                    <h1 style='text-align: left; margin-bottom: 0;'>🥋 SER Jiu-Jítsu</h1>
-                    <p style='text-align: left; color: grey; margin-top: -5px;'>Sistema de Alta Performance</p>
-                </div>
-            """, unsafe_allow_html=True)
+            st.markdown("""<div class="title-container"><h1 style='text-align: left; margin-bottom: 0;'>🥋 SER Jiu-Jítsu</h1><p style='text-align: left; color: grey; margin-top: -5px;'>Sistema de Alta Performance</p></div>""", unsafe_allow_html=True)
         
         st.markdown("---")
         
@@ -167,25 +137,107 @@ def tela_login():
                             st.session_state.logado = True
                             st.session_state.pagina_atual = 'sistema'
                             st.rerun()
-                        else:
-                            st.toast("🚫 Usuário ou senha incorretos.", icon="❌")
-                    except KeyError:
-                        st.error("Erro: Configure [admin] nos Secrets.")
+                        else: st.toast("🚫 Usuário ou senha incorretos.", icon="❌")
+                    except KeyError: st.error("Erro: Configure [admin] nos Secrets.")
 
         with tab_aluno:
             st.write("")
-            st.info("Ainda não tem cadastro? Registre-se agora para acompanhar sua graduação e presença.")
-            if st.button("📝 Fazer Auto-Cadastro", use_container_width=True):
-                st.session_state.pagina_atual = 'cadastro_aluno'
-                st.rerun()
+            opcao_aluno = st.radio("Selecione:", ["Já sou aluno", "Quero me cadastrar"], horizontal=True)
+            
+            if opcao_aluno == "Já sou aluno":
+                with st.form("login_aluno"):
+                    tel_login = st.text_input("Seu WhatsApp (igual ao cadastro)", placeholder="Ex: 11999999999")
+                    if st.form_submit_button("Acessar Meu Painel", use_container_width=True):
+                        aluno = executar_query("SELECT id, nome FROM alunos WHERE telefone = %s", (tel_login,), fetch=True)
+                        if aluno:
+                            st.session_state.aluno_id = aluno[0]['id']
+                            st.session_state.aluno_nome = aluno[0]['nome']
+                            st.session_state.pagina_atual = 'area_aluno'
+                            st.rerun()
+                        else:
+                            st.error("Telefone não encontrado. Faça seu cadastro primeiro.")
+            else:
+                st.info("Preencha sua ficha para entrar no time.")
+                if st.button("📝 Ir para Ficha de Cadastro", use_container_width=True):
+                    st.session_state.pagina_atual = 'cadastro_aluno'
+                    st.rerun()
+            
             st.markdown("---")
             st.caption("Dúvidas? Procure seu professor no tatame.")
+
+# ==========================================
+# TELA: ÁREA RESTRITA DO ALUNO (COM GAMIFICAÇÃO)
+# ==========================================
+def tela_area_aluno():
+    col_logo, col_sair = st.columns([4, 1])
+    with col_logo:
+        st.subheader(f"Bem-vindo, {st.session_state.aluno_nome}! 🥋")
+    with col_sair:
+        if st.button("Sair"):
+            st.session_state.aluno_id = None
+            st.session_state.pagina_atual = 'login'
+            st.rerun()
+            
+    id_a = st.session_state.aluno_id
+    dados = executar_query("SELECT * FROM alunos WHERE id = %s", (id_a,), fetch=True)[0]
+    
+    # Check-in
+    st.markdown("### 📍 Check-in de Treino")
+    hoje = date.today()
+    presenca_hoje = executar_query("SELECT id FROM presencas WHERE id_aluno = %s AND data_aula = %s", (id_a, hoje), fetch=True)
+    checkin_pendente = executar_query("SELECT id, hora_checkin FROM checkins WHERE id_aluno = %s AND data_checkin = %s", (id_a, hoje), fetch=True)
+    
+    if presenca_hoje:
+        st.success("✅ Presença CONFIRMADA no treino de hoje! Bom descanso.")
+    elif checkin_pendente:
+        hora_formatada = checkin_pendente[0]['hora_checkin'].strftime('%H:%M')
+        st.warning(f"⏳ Check-in realizado às {hora_formatada}. Aguardando aprovação do professor.")
+    else:
+        st.info("Vai treinar hoje? Faça seu check-in para garantir sua presença.")
+        if st.button("💪 Fazer Check-in Agora", type="primary", use_container_width=True):
+            executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, CURRENT_DATE, CURRENT_TIME - INTERVAL '3 hours')", (id_a,))
+            st.balloons()
+            st.toast("Check-in enviado! Avise o professor.", icon="📨")
+            time.sleep(2)
+            st.rerun()
+            
+    st.divider()
+
+    # --- GAMIFICAÇÃO (BARRA DE PROGRESSO) ---
+    # Lógica simplificada: Meta de 50 treinos para próxima graduação (Exemplo visual)
+    total_treinos = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s", (id_a,), fetch=True)[0][0]
+    treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s", (id_a, hoje.month), fetch=True)[0][0]
+    
+    meta_treinos = 100 # Meta visual simbólica
+    progresso = min(total_treinos / meta_treinos, 1.0)
+    
+    st.markdown("### 🚀 Próxima Meta")
+    st.progress(progresso, text=f"Progresso de Treinos: {total_treinos} aulas")
+    st.caption("Mantenha a constância para alcançar sua próxima graduação!")
+
+    st.markdown("### 📊 Seu Desempenho")
+    c1, c2, c3 = st.columns(3)
+    c1.info(f"**Faixa Atual**\n\n# {dados['faixa']}")
+    c2.metric("Graus", dados['graus'])
+    c3.metric("Treinos (Total)", total_treinos, delta=f"+{treinos_mes} este mês")
+    
+    st.divider()
+    
+    st.markdown("### 📜 Sua Jornada")
+    hist = executar_query("SELECT data_mudanca, faixa_nova, graus_nova, motivo FROM historico_graduacao WHERE id_aluno = %s ORDER BY data_mudanca DESC", (id_a,), fetch=True)
+    if hist:
+        for item in hist:
+            with st.container():
+                st.markdown(f"**{item['data_mudanca'].strftime('%d/%m/%Y')}** - {item['motivo']} | Faixa: `{item['faixa_nova']}` | Graus: `{item['graus_nova']}`")
+                st.markdown("---")
+    else:
+        st.info("Nenhum histórico registrado ainda.")
 
 # ==========================================
 # TELA 2: AUTO-CADASTRO
 # ==========================================
 def tela_cadastro_aluno():
-    st.button("⬅️ Voltar para Login", on_click=lambda: st.session_state.update({'pagina_atual': 'login'}))
+    st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pagina_atual': 'login'}))
     col_logo1, col_logo2 = st.columns([1, 5])
     with col_logo1: mostrar_logo()
     with col_logo2:
@@ -221,8 +273,7 @@ def tela_cadastro_aluno():
         if submitted:
             if nome_auto and tel_auto and turma_auto != "Nenhuma disponível":
                 existe = executar_query("SELECT id FROM alunos WHERE nome = %s AND telefone = %s", (nome_auto, tel_auto), fetch=True)
-                if existe:
-                    st.toast("⚠️ Já existe um aluno com esse Nome e Telefone!", icon="⚠️")
+                if existe: st.toast("⚠️ Já existe um aluno com esse Nome e Telefone!", icon="⚠️")
                 else:
                     id_t_auto = op_t_auto.get(turma_auto)
                     dt_grau_final = data_grau_auto if graus_auto > 0 else data_faixa_auto
@@ -236,11 +287,10 @@ def tela_cadastro_aluno():
                     time.sleep(3)
                     st.session_state.pagina_atual = 'login'
                     st.rerun()
-            else:
-                st.toast("Preencha Nome, Telefone e Turma.", icon="🚨")
+            else: st.toast("Preencha Nome, Telefone e Turma.", icon="🚨")
 
 # ==========================================
-# TELA 3: SISTEMA PRINCIPAL
+# TELA 3: SISTEMA PRINCIPAL (ADMIN)
 # ==========================================
 def sistema_principal():
     with st.sidebar:
@@ -255,29 +305,46 @@ def sistema_principal():
     
     st.title("🥋 Painel Administrativo")
     
+    pendentes = executar_query("""SELECT c.id, c.hora_checkin, a.nome, a.id as id_aluno FROM checkins c JOIN alunos a ON c.id_aluno = a.id ORDER BY c.hora_checkin DESC""", fetch=True)
+    if pendentes:
+        st.info(f"🔔 **{len(pendentes)}** Aluno(s) pedindo check-in agora!")
+        with st.expander("Ver Pedidos de Check-in", expanded=True):
+            for p in pendentes:
+                col_nome, col_btn_ok, col_btn_no = st.columns([3, 1, 1])
+                with col_nome:
+                    hora_formatada = p['hora_checkin'].strftime('%H:%M')
+                    st.write(f"**{p['nome']}** às {hora_formatada}")
+                with col_btn_ok:
+                    if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
+                        executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, CURRENT_DATE)", (p['id_aluno'],))
+                        executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
+                        st.toast(f"{p['nome']} confirmado!", icon="✅")
+                        time.sleep(1)
+                        st.rerun()
+                with col_btn_no:
+                    if st.button("❌ Rejeitar", key=f"no_{p['id']}"):
+                        executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
+                        st.toast("Pedido rejeitado.", icon="🗑️")
+                        time.sleep(1)
+                        st.rerun()
+        st.divider()
+
     tab_dash, tab_gestao, tab_chamada, tab_regras = st.tabs([
         "📊 Dashboard", "👥 Gestão Alunos", "📅 Chamada", "⚙️ Configurações"
     ])
 
-    # --- ABA 1: DASHBOARD ---
     with tab_dash:
         st.header("Visão Geral")
         total_alunos, niver_mes, dados_f, dados_freq = carregar_dados_dashboard()
-        
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Alunos Ativos", total_alunos)
-        
         hoje = date.today()
         aniversariantes_hoje = [n for n in niver_mes if n['dia'] == hoje.day]
         c2.metric("Aniversariantes Hoje", len(aniversariantes_hoje))
         if aniversariantes_hoje: c2.success(f"🎉 {', '.join([n['nome'] for n in aniversariantes_hoje])}")
-        
-        # Frequência Média (Total últimos 7 dias)
         total_treinos_7dias = sum([d['total'] for d in dados_freq]) if dados_freq else 0
         c3.metric("Treinos na Semana", total_treinos_7dias)
-
         st.divider()
-
         col_graf1, col_graf2 = st.columns(2)
         with col_graf1:
             st.subheader("🥋 Distribuição por Faixa")
@@ -295,17 +362,13 @@ def sistema_principal():
                 st.plotly_chart(fig_area, use_container_width=True)
             else: st.info("Sem treinos nos últimos 7 dias.")
         st.divider()
-        
-        # === ANÁLISE INTELIGENTE DE GRADUAÇÃO ===
         st.subheader("🎓 Sugestões de Graduação")
         if st.button("🔄 Atualizar Análise Agora"):
             st.cache_data.clear()
             st.rerun()
-            
         alunos_db = executar_query("SELECT id, nome, data_nascimento, faixa, graus, data_faixa, data_ultimo_grau FROM alunos WHERE status_aluno = 'Ativo'", fetch=True)
         lista_grau = []
         lista_faixa = []
-        
         if alunos_db:
             for alu in alunos_db:
                 idade = calcular_idade(alu['data_nascimento'])
@@ -314,14 +377,9 @@ def sistema_principal():
                 aulas_no_grau = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND data_aula >= %s", (alu['id'], dt_grau), fetch=True)[0][0]
                 meses_no_grau = (hoje - dt_grau).days // 30
                 meses_na_faixa = (hoje - dt_faixa).days // 30
-                
-                # --- LÓGICA KIDS ---
                 if idade < 16:
-                    if aulas_no_grau >= 8:
-                        lista_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Aulas": aulas_no_grau, "Motivo": "8+ Aulas"})
-                    if meses_na_faixa >= 6:
-                        lista_faixa.append({"Nome": alu['nome'], "Faixa Atual": alu['faixa'], "Tempo": f"{meses_na_faixa} meses"})
-                # --- LÓGICA ADULTOS ---
+                    if aulas_no_grau >= 8: lista_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Aulas": aulas_no_grau, "Motivo": "8+ Aulas"})
+                    if meses_na_faixa >= 6: lista_faixa.append({"Nome": alu['nome'], "Faixa Atual": alu['faixa'], "Tempo": f"{meses_na_faixa} meses"})
                 else:
                     tempo_grau_ok = False
                     if alu['faixa'] == 'Branca':
@@ -330,20 +388,14 @@ def sistema_principal():
                         if meses_no_grau >= 36: tempo_grau_ok = True 
                     else: 
                         if meses_no_grau >= 6: tempo_grau_ok = True
-                    
-                    if tempo_grau_ok and alu['graus'] < 4:
-                        lista_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Tempo Grau": f"{meses_no_grau} meses", "Motivo": "Tempo Mínimo"})
-
+                    if tempo_grau_ok and alu['graus'] < 4: lista_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Tempo Grau": f"{meses_no_grau} meses", "Motivo": "Tempo Mínimo"})
                     if alu['graus'] == 4:
                         tempo_faixa_ok = False
                         if alu['faixa'] == 'Branca': tempo_faixa_ok = True 
                         elif alu['faixa'] == 'Azul' and meses_na_faixa >= 24: tempo_faixa_ok = True
                         elif alu['faixa'] == 'Roxa' and meses_na_faixa >= 18: tempo_faixa_ok = True
                         elif alu['faixa'] == 'Marrom' and meses_na_faixa >= 12: tempo_faixa_ok = True
-                        
-                        if tempo_faixa_ok:
-                            lista_faixa.append({"Nome": alu['nome'], "Faixa Atual": alu['faixa'], "Tempo": f"{meses_na_faixa} meses"})
-
+                        if tempo_faixa_ok: lista_faixa.append({"Nome": alu['nome'], "Faixa Atual": alu['faixa'], "Tempo": f"{meses_na_faixa} meses"})
         c_alert1, c_alert2 = st.columns(2)
         with c_alert1:
             if lista_grau:
@@ -356,7 +408,6 @@ def sistema_principal():
                 st.dataframe(pd.DataFrame(lista_faixa), use_container_width=True, hide_index=True)
             else: st.success("Nenhuma troca de faixa pendente.")
 
-    # --- ABA 2: GESTÃO DE ALUNOS ---
     with tab_gestao:
         st.header("Gerenciamento Administrativo")
         op_g = st.radio("Ação:", ["Listar e Editar", "Cadastrar Novo (Manual)"], horizontal=True)
@@ -376,9 +427,9 @@ def sistema_principal():
                 tel = st.text_input("Telefone")
                 if st.form_submit_button("Salvar Atleta"):
                     id_t = op_t.get(turma)
-                    q = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, data_faixa, data_ultimo_grau, id_turma, nome_responsavel, telefone, status_aluno) 
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'Ativo') RETURNING id"""
-                    novo_id = executar_query(q, (nome, nasc, faixa, graus, d_faixa, d_grau, id_t, resp, tel), fetch=True)[0][0]
+                    q = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, id_turma, nome_responsavel, telefone, status_aluno, data_faixa, data_ultimo_grau) 
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', %s, %s) RETURNING id"""
+                    novo_id = executar_query(q, (nome, nasc, faixa, graus, id_t, resp, tel), fetch=True)[0][0]
                     executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_nova, graus_nova, data_mudanca, motivo) 
                                       VALUES (%s, %s, %s, %s, 'Cadastro Manual')""", (novo_id, faixa, graus, d_grau))
                     st.cache_data.clear()
@@ -388,16 +439,12 @@ def sistema_principal():
             col_busca, col_filtro = st.columns([2, 1])
             busca_nome = col_busca.text_input("🔍 Buscar por Nome:")
             filtro_faixa = col_filtro.multiselect("Filtrar por Faixa:", ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde", "Azul", "Roxa", "Marrom", "Preta"])
-            
             dados = executar_query("SELECT id, nome, data_nascimento, faixa, graus, data_faixa, data_ultimo_grau, nome_responsavel, telefone FROM alunos ORDER BY nome", fetch=True)
-            
             if dados:
                 df_e = pd.DataFrame(dados, columns=['ID', 'Nome', 'Nascimento', 'Faixa', 'Graus', 'Data Faixa', 'Data Último Grau', 'Responsável', 'Telefone'])
                 if busca_nome: df_e = df_e[df_e['Nome'].str.contains(busca_nome, case=False, na=False)]
                 if filtro_faixa: df_e = df_e[df_e['Faixa'].isin(filtro_faixa)]
-                
                 st.data_editor(df_e, use_container_width=True, hide_index=True, key="editor_alunos", disabled=("ID",), column_config={"Nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"), "Data Faixa": st.column_config.DateColumn("Data Faixa", format="DD/MM/YYYY"), "Data Último Grau": st.column_config.DateColumn("Data Último Grau", format="DD/MM/YYYY")})
-                
                 if st.button("💾 Salvar Alterações da Tabela", type="primary", use_container_width=True):
                     for _, r in df_up.iterrows():
                         q_up = """UPDATE alunos SET nome=%s, data_nascimento=%s, faixa=%s, graus=%s, data_faixa=%s, data_ultimo_grau=%s, nome_responsavel=%s, telefone=%s WHERE id=%s"""
@@ -406,31 +453,23 @@ def sistema_principal():
                     st.toast("Tabela atualizada!", icon="💾")
                     time.sleep(1)
                     st.rerun()
-                
                 st.divider()
                 st.subheader("🎓 Painel de Graduação & Histórico")
-                
                 mapeamento_alunos = {r['Nome']: r['ID'] for index, r in df_e.iterrows()}
                 aluno_selecionado = st.selectbox("Selecione o Aluno para Ações:", [""] + list(mapeamento_alunos.keys()))
-                
                 if aluno_selecionado:
                     id_alvo = mapeamento_alunos[aluno_selecionado]
                     dados_aluno = executar_query("SELECT faixa, graus FROM alunos WHERE id = %s", (id_alvo,), fetch=True)[0]
                     faixa_atual = dados_aluno['faixa']
                     graus_atual = dados_aluno['graus']
-
-                    # --- FREQUÊNCIA ---
                     total_treinos = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s", (id_alvo,), fetch=True)[0][0]
                     hoje = date.today()
                     treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s AND EXTRACT(YEAR FROM data_aula) = %s", (id_alvo, hoje.month, hoje.year), fetch=True)[0][0]
 
                     col_info, col_freq1, col_freq2 = st.columns([2, 1, 1])
-                    with col_info:
-                        st.info(f"**Atleta:** {aluno_selecionado}\n\n**Faixa:** {faixa_atual} | **Graus:** {graus_atual}")
-                    with col_freq1:
-                        st.metric("Total Treinos", total_treinos)
-                    with col_freq2:
-                        st.metric("Treinos Mês", treinos_mes)
+                    with col_info: st.info(f"**Atleta:** {aluno_selecionado}\n\n**Faixa:** {faixa_atual} | **Graus:** {graus_atual}")
+                    with col_freq1: st.metric("Total Treinos", total_treinos)
+                    with col_freq2: st.metric("Treinos Mês", treinos_mes)
 
                     c_grau, c_promo, c_del = st.columns(3)
                     with c_grau:
@@ -460,7 +499,6 @@ def sistema_principal():
                             st.toast("Aluno removido.", icon="🗑️")
                             time.sleep(1)
                             st.rerun()
-                    
                     st.markdown("---")
                     with st.expander(f"📜 Ver Histórico Completo de {aluno_selecionado}"):
                         hist = executar_query("""SELECT data_mudanca, faixa_anterior, graus_anterior, faixa_nova, graus_nova, motivo FROM historico_graduacao WHERE id_aluno = %s ORDER BY data_mudanca DESC, id DESC""", (id_alvo,), fetch=True)
@@ -469,7 +507,6 @@ def sistema_principal():
                             st.dataframe(df_hist, use_container_width=True, hide_index=True, column_config={"Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")})
                         else: st.write("Nenhum registro histórico encontrado.")
 
-    # --- ABA 3: CHAMADA ---
     with tab_chamada:
         st.header("Diário de Classe")
         ts = executar_query("SELECT id, nome_turma FROM turmas;", fetch=True)
@@ -492,9 +529,28 @@ def sistema_principal():
             else: st.warning("Não há alunos ativos nesta turma.")
         else: st.warning("Cadastre turmas em Configurações.")
 
-    # --- ABA 4: CONFIGURAÇÕES ---
+    # --- ABA 4: CONFIGURAÇÕES (AGORA COM EXPORTAR DADOS) ---
     with tab_regras:
-        st.header("Configurações e Remanejamento")
+        st.header("Configurações e Backup")
+        
+        # NOVIDADE: EXPORTAR DADOS
+        st.subheader("💾 Backup e Dados")
+        st.markdown("Baixe a lista completa de alunos para ter um backup seguro no seu computador.")
+        
+        todos_alunos = executar_query("SELECT * FROM alunos", fetch=True)
+        if todos_alunos:
+            df_export = pd.DataFrame(todos_alunos)
+            csv = converter_df_para_csv(df_export)
+            st.download_button(
+                label="📥 Baixar Planilha Completa (Excel/CSV)",
+                data=csv,
+                file_name=f"backup_alunos_{date.today()}.csv",
+                mime="text/csv",
+                type="primary"
+            )
+
+        st.divider()
+
         c_t1, c_t2 = st.columns(2)
         with c_t1:
             st.subheader("🏫 Gestão de Turmas")
@@ -525,10 +581,13 @@ def sistema_principal():
                     st.toast(f"{a_sel} transferido para {t_sel}!", icon="🔄")
                     st.rerun()
 
+# --- CONTROLADOR DE FLUXO ---
 if st.session_state.pagina_atual == 'login':
     tela_login()
 elif st.session_state.pagina_atual == 'cadastro_aluno':
     tela_cadastro_aluno()
+elif st.session_state.pagina_atual == 'area_aluno':
+    tela_area_aluno()
 elif st.session_state.pagina_atual == 'sistema':
     if st.session_state.logado:
         sistema_principal()
