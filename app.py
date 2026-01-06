@@ -124,7 +124,7 @@ def tela_login():
         col_img_header, col_text_header = st.columns([1, 3])
         with col_img_header: mostrar_logo()
         with col_text_header:
-            st.markdown("""<div class="title-container"><h1 style='text-align: left; margin-bottom: 0;'>🥋 SER Jiu-Jítsu</h1><p style='text-align: left; color: grey; margin-top: -5px;'>Sistema de Alta Performance</p></div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="title-container"><h1 style='text-align: left; margin-bottom: 0;'>🥋 SER Jiu-Jítsu - FamilyFit</h1><p style='text-align: left; color: grey; margin-top: -5px;'>Sistema de Gestão de Turmas</p></div>""", unsafe_allow_html=True)
         
         st.markdown("---")
         
@@ -258,7 +258,7 @@ def tela_cadastro_aluno():
         nome_auto = col1.text_input("Nome Completo *")
         nasc_auto = col1.date_input("Data de Nascimento", value=date(2000, 1, 1), min_value=date(1920, 1, 1), max_value=date.today(), format="DD/MM/YYYY")
         col_tel, col_resp = st.columns(2)
-        tel_auto = col_tel.text_input("WhatsApp (com DDD) *")
+        tel_auto = col_tel.text_input("WhatsApp (Somente números, com DDD) *")
         resp_auto = col_resp.text_input("Nome do Responsável (se menor de idade)")
         
         st.divider()
