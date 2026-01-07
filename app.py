@@ -6,7 +6,7 @@ import plotly.express as px
 from datetime import date, datetime, timedelta
 import time
 import os
-import re  # <--- IMPORTANTE: Nova biblioteca para limpar os números
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -86,12 +86,9 @@ def calcular_idade(nascimento):
     hoje = date.today()
     return hoje.year - nascimento.year - ((hoje.month, hoje.day) < (nascimento.month, nascimento.day))
 
-# --- HELPER: LIMPAR TELEFONE (NOVO) ---
+# --- HELPER: LIMPAR TELEFONE ---
 def limpar_telefone(telefone):
-    """Remove tudo que não for número (espaços, traços, parênteses)"""
-    if not telefone:
-        return ""
-    # O comando abaixo substitui tudo que NÃO é dígito (\D) por vazio
+    if not telefone: return ""
     return re.sub(r'\D', '', str(telefone))
 
 # --- HELPER: EXPORTAR CSV ---
@@ -156,9 +153,7 @@ def tela_login():
                 with st.form("login_aluno"):
                     tel_input = st.text_input("Seu WhatsApp (igual ao cadastro)", placeholder="Ex: 85999999999")
                     if st.form_submit_button("Acessar Meu Painel", use_container_width=True):
-                        # Limpa o telefone antes de buscar no banco
                         tel_limpo = limpar_telefone(tel_input)
-                        
                         aluno = executar_query("SELECT id, nome FROM alunos WHERE telefone = %s", (tel_limpo,), fetch=True)
                         if aluno:
                             st.session_state.aluno_id = aluno[0]['id']
@@ -242,7 +237,7 @@ def tela_area_aluno():
         st.info("Nenhum histórico registrado ainda.")
 
 # ==========================================
-# TELA 2: AUTO-CADASTRO (COM PROTEÇÃO DUPLICIDADE)
+# TELA 2: AUTO-CADASTRO
 # ==========================================
 def tela_cadastro_aluno():
     st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pagina_atual': 'login'}))
@@ -280,10 +275,7 @@ def tela_cadastro_aluno():
         
         if submitted:
             if nome_auto and tel_auto and turma_auto != "Nenhuma disponível":
-                # --- HIGIENIZAÇÃO DO TELEFONE ---
                 tel_limpo = limpar_telefone(tel_auto)
-                
-                # Verifica duplicidade usando o telefone LIMPO
                 existe = executar_query("SELECT id FROM alunos WHERE telefone = %s", (tel_limpo,), fetch=True)
                 
                 if existe:
@@ -292,8 +284,6 @@ def tela_cadastro_aluno():
                 else:
                     id_t_auto = op_t_auto.get(turma_auto)
                     dt_grau_final = data_grau_auto if graus_auto > 0 else data_faixa_auto
-                    
-                    # Salva o telefone LIMPO no banco
                     q_auto = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, id_turma, nome_responsavel, telefone, status_aluno, data_faixa, data_ultimo_grau) 
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', %s, %s) RETURNING id"""
                     novo_id = executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_limpo, data_faixa_auto, dt_grau_final), fetch=True)[0][0]
@@ -322,8 +312,15 @@ def sistema_principal():
     
     st.title("🥋 Painel Administrativo")
     
-    # --- ÁREA DE NOTIFICAÇÕES ---
-    pendentes = executar_query("""SELECT c.id, c.hora_checkin, a.nome, a.id as id_aluno FROM checkins c JOIN alunos a ON c.id_aluno = a.id ORDER BY c.hora_checkin DESC""", fetch=True)
+    # --- ÁREA DE NOTIFICAÇÕES (LÓGICA CORRIGIDA PARA DATA ORIGINAL DO CHECK-IN) ---
+    # Agora buscamos também a coluna data_checkin
+    pendentes = executar_query("""
+        SELECT c.id, c.hora_checkin, c.data_checkin, a.nome, a.id as id_aluno 
+        FROM checkins c 
+        JOIN alunos a ON c.id_aluno = a.id 
+        ORDER BY c.data_checkin DESC, c.hora_checkin DESC
+    """, fetch=True)
+    
     if pendentes:
         st.info(f"🔔 **{len(pendentes)}** Aluno(s) pedindo check-in agora!")
         with st.expander("Ver Pedidos de Check-in", expanded=True):
@@ -331,12 +328,18 @@ def sistema_principal():
                 col_nome, col_btn_ok, col_btn_no = st.columns([3, 1, 1])
                 with col_nome:
                     hora_formatada = p['hora_checkin'].strftime('%H:%M')
-                    st.write(f"**{p['nome']}** às {hora_formatada}")
+                    # Mostra a data se não for de hoje
+                    data_str = ""
+                    if p['data_checkin'] != date.today():
+                        data_str = f" ({p['data_checkin'].strftime('%d/%m')})"
+                    st.write(f"**{p['nome']}** às {hora_formatada}{data_str}")
+                
                 with col_btn_ok:
                     if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
-                        executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, CURRENT_DATE)", (p['id_aluno'],))
+                        # CORREÇÃO: Usa p['data_checkin'] em vez de CURRENT_DATE
+                        executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (p['id_aluno'], p['data_checkin']))
                         executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
-                        st.toast(f"{p['nome']} confirmado!", icon="✅")
+                        st.toast(f"{p['nome']} confirmado na data correta!", icon="✅")
                         time.sleep(1)
                         st.rerun()
                 with col_btn_no:
@@ -472,16 +475,12 @@ def sistema_principal():
                 tel = st.text_input("Telefone")
                 
                 if st.form_submit_button("Salvar Atleta"):
-                    # 1. Higienização
                     tel_limpo = limpar_telefone(tel)
-                    
-                    # 2. VERIFICAÇÃO DE DUPLICIDADE (AQUI ESTAVA FALTANDO!)
                     aluno_existente = executar_query("SELECT nome FROM alunos WHERE telefone = %s", (tel_limpo,), fetch=True)
                     
                     if aluno_existente:
                         st.error(f"❌ Erro: O número {tel} já está cadastrado para o aluno: {aluno_existente[0]['nome']}")
                     else:
-                        # 3. Se não existe, prossegue com o cadastro
                         id_t = op_t.get(turma)
                         q = """INSERT INTO alunos (nome, data_nascimento, faixa, graus, id_turma, nome_responsavel, telefone, status_aluno, data_faixa, data_ultimo_grau) 
                                VALUES (%s, %s, %s, %s, %s, %s, %s, 'Ativo', %s, %s) RETURNING id"""
@@ -565,7 +564,7 @@ def sistema_principal():
                             st.dataframe(df_hist, use_container_width=True, hide_index=True, column_config={"Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")})
                         else: st.write("Nenhum registro histórico encontrado.")
 
-    # --- ABA 3: CHAMADA ---
+    # --- ABA 3: CHAMADA (AGORA COM SELEÇÃO DE DATA) ---
     with tab_chamada:
         st.header("Diário de Classe")
         ts = executar_query("SELECT id, nome_turma FROM turmas;", fetch=True)
@@ -575,6 +574,10 @@ def sistema_principal():
             als = executar_query("SELECT id, nome FROM alunos WHERE id_turma = %s AND status_aluno = 'Ativo'", (op_c[sel_t],), fetch=True)
             if als:
                 with st.form("chamada"):
+                    # CORREÇÃO: Data Picker para escolher a data da aula (Retroativa)
+                    data_aula_manual = st.date_input("📅 Data da Aula", value=date.today())
+                    
+                    st.write("Marque quem estava presente:")
                     pres = []
                     cols = st.columns(3)
                     for i, a in enumerate(als):
@@ -582,10 +585,39 @@ def sistema_principal():
                             if st.checkbox(a['nome'], key=f"p_{a['id']}"): pres.append(a['id'])
                     st.divider()
                     if st.form_submit_button("✅ Registrar Presenças"):
-                        for id_a in pres: executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, CURRENT_DATE)", (id_a,))
+                        # CORREÇÃO: Usa data_aula_manual em vez de CURRENT_DATE
+                        for id_a in pres: 
+                            executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (id_a, data_aula_manual))
+                        
                         st.cache_data.clear()
-                        st.toast(f"{len(pres)} presenças registradas!", icon="✅")
+                        st.toast(f"{len(pres)} presenças registradas para {data_aula_manual.strftime('%d/%m')}!", icon="✅")
             else: st.warning("Não há alunos ativos nesta turma.")
+            
+            # --- CONSULTAR HISTÓRICO ---
+            st.divider()
+            st.subheader("🔎 Consultar Presenças Anteriores")
+            
+            col_data_hist, col_resumo_hist = st.columns([1, 2])
+            with col_data_hist:
+                data_busca = st.date_input("Ver presença do dia:", value=date.today(), key="hist_busca")
+            
+            q_hist = """
+                SELECT a.nome, to_char(p.data_aula, 'DD/MM/YYYY') as data
+                FROM presencas p
+                JOIN alunos a ON p.id_aluno = a.id
+                WHERE p.data_aula = %s AND a.id_turma = %s
+                ORDER BY a.nome
+            """
+            hist_presenca = executar_query(q_hist, (data_busca, op_c[sel_t]), fetch=True)
+            
+            with col_resumo_hist:
+                if hist_presenca:
+                    st.success(f"✅ Total: {len(hist_presenca)} alunos presentes.")
+                    df_hist_p = pd.DataFrame(hist_presenca, columns=['Aluno', 'Data'])
+                    st.dataframe(df_hist_p, use_container_width=True, hide_index=True)
+                else:
+                    st.info("📭 Ninguém marcado nesta data para esta turma.")
+
         else: st.warning("Cadastre turmas em Configurações.")
 
     # --- ABA 4: CONFIGURAÇÕES ---
@@ -639,7 +671,6 @@ def sistema_principal():
                     st.toast(f"{a_sel} transferido para {t_sel}!", icon="🔄")
                     st.rerun()
 
-                    
 # --- CONTROLADOR DE FLUXO ---
 if st.session_state.pagina_atual == 'login':
     tela_login()
