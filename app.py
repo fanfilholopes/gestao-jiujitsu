@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 import time
 import os
 import re
+import urllib.parse
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -185,6 +186,14 @@ def tela_area_aluno():
             st.rerun()
             
     id_a = st.session_state.aluno_id
+    
+    # --- MURAL DE AVISOS (NOVIDADE) ---
+    avisos = executar_query("SELECT titulo, mensagem, data_postagem FROM mural_avisos WHERE ativo = TRUE ORDER BY id DESC LIMIT 1", fetch=True)
+    if avisos:
+        aviso = avisos[0]
+        st.warning(f"📢 **MURAL: {aviso['titulo']}**\n\n{aviso['mensagem']}\n\n*(Postado em {aviso['data_postagem'].strftime('%d/%m')})*", icon="⚠️")
+        st.divider()
+
     dados = executar_query("SELECT * FROM alunos WHERE id = %s", (id_a,), fetch=True)[0]
     
     st.markdown("### 📍 Check-in de Treino")
@@ -312,8 +321,7 @@ def sistema_principal():
     
     st.title("🥋 Painel Administrativo")
     
-    # --- ÁREA DE NOTIFICAÇÕES (LÓGICA CORRIGIDA PARA DATA ORIGINAL DO CHECK-IN) ---
-    # Agora buscamos também a coluna data_checkin
+    # --- ÁREA DE NOTIFICAÇÕES ---
     pendentes = executar_query("""
         SELECT c.id, c.hora_checkin, c.data_checkin, a.nome, a.id as id_aluno 
         FROM checkins c 
@@ -328,7 +336,6 @@ def sistema_principal():
                 col_nome, col_btn_ok, col_btn_no = st.columns([3, 1, 1])
                 with col_nome:
                     hora_formatada = p['hora_checkin'].strftime('%H:%M')
-                    # Mostra a data se não for de hoje
                     data_str = ""
                     if p['data_checkin'] != date.today():
                         data_str = f" ({p['data_checkin'].strftime('%d/%m')})"
@@ -336,7 +343,6 @@ def sistema_principal():
                 
                 with col_btn_ok:
                     if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
-                        # CORREÇÃO: Usa p['data_checkin'] em vez de CURRENT_DATE
                         executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (p['id_aluno'], p['data_checkin']))
                         executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
                         st.toast(f"{p['nome']} confirmado na data correta!", icon="✅")
@@ -350,8 +356,8 @@ def sistema_principal():
                         st.rerun()
         st.divider()
 
-    tab_dash, tab_gestao, tab_chamada, tab_regras = st.tabs([
-        "📊 Dashboard", "👥 Gestão Alunos", "📅 Chamada", "⚙️ Configurações"
+    tab_dash, tab_gestao, tab_chamada, tab_msg, tab_regras = st.tabs([
+        "📊 Dashboard", "👥 Gestão Alunos", "📅 Chamada", "📢 Comunicação", "⚙️ Configurações"
     ])
 
     # --- ABA 1: DASHBOARD ---
@@ -384,6 +390,45 @@ def sistema_principal():
                 st.plotly_chart(fig_area, use_container_width=True)
             else: st.info("Sem treinos nos últimos 7 dias.")
         st.divider()
+
+        
+        # === RANKING DE ASSIDUIDADE (NOVIDADE) ===
+        st.subheader("🏆 Ranking dos Casca-Grossas (Este Mês)")
+        
+        # Query para pegar os top 5 do mês atual
+        q_ranking = """
+            SELECT a.nome, COUNT(p.id) as total 
+            FROM presencas p 
+            JOIN alunos a ON p.id_aluno = a.id 
+            WHERE EXTRACT(MONTH FROM p.data_aula) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(YEAR FROM p.data_aula) = EXTRACT(YEAR FROM CURRENT_DATE)
+            GROUP BY a.nome 
+            ORDER BY total DESC 
+            LIMIT 5
+        """
+        ranking = executar_query(q_ranking, fetch=True)
+        
+        if ranking:
+            col_rank_1, col_rank_rest = st.columns([1, 2])
+            
+            # Destaque para o 1º Lugar
+            with col_rank_1:
+                campeao = ranking[0]
+                st.info(f"🥇 **Líder do Mês**")
+                st.metric(label=campeao['nome'], value=f"{campeao['total']} treinos")
+                if campeao['total'] > 12:
+                    st.caption("🔥 Esse tá voando!")
+            
+            # Tabela do 2º ao 5º
+            with col_rank_rest:
+                st.write("🔝 **Top Seguidores**")
+                for i, r in enumerate(ranking[1:], start=2):
+                    st.write(f"**{i}º** {r['nome']} - `{r['total']} treinos`")
+        else:
+            st.info("Nenhum treino registrado neste mês ainda. O tatame está esperando!")
+            
+        st.divider()
+
         
         st.subheader("🎓 Sugestões de Graduação")
         if st.button("🔄 Atualizar Análise Agora"):
@@ -564,7 +609,7 @@ def sistema_principal():
                             st.dataframe(df_hist, use_container_width=True, hide_index=True, column_config={"Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")})
                         else: st.write("Nenhum registro histórico encontrado.")
 
-    # --- ABA 3: CHAMADA (AGORA COM SELEÇÃO DE DATA) ---
+    # --- ABA 3: CHAMADA ---
     with tab_chamada:
         st.header("Diário de Classe")
         ts = executar_query("SELECT id, nome_turma FROM turmas;", fetch=True)
@@ -574,9 +619,7 @@ def sistema_principal():
             als = executar_query("SELECT id, nome FROM alunos WHERE id_turma = %s AND status_aluno = 'Ativo'", (op_c[sel_t],), fetch=True)
             if als:
                 with st.form("chamada"):
-                    # CORREÇÃO: Data Picker para escolher a data da aula (Retroativa)
                     data_aula_manual = st.date_input("📅 Data da Aula", value=date.today())
-                    
                     st.write("Marque quem estava presente:")
                     pres = []
                     cols = st.columns(3)
@@ -585,22 +628,17 @@ def sistema_principal():
                             if st.checkbox(a['nome'], key=f"p_{a['id']}"): pres.append(a['id'])
                     st.divider()
                     if st.form_submit_button("✅ Registrar Presenças"):
-                        # CORREÇÃO: Usa data_aula_manual em vez de CURRENT_DATE
                         for id_a in pres: 
                             executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (id_a, data_aula_manual))
-                        
                         st.cache_data.clear()
                         st.toast(f"{len(pres)} presenças registradas para {data_aula_manual.strftime('%d/%m')}!", icon="✅")
             else: st.warning("Não há alunos ativos nesta turma.")
             
-            # --- CONSULTAR HISTÓRICO ---
             st.divider()
             st.subheader("🔎 Consultar Presenças Anteriores")
-            
             col_data_hist, col_resumo_hist = st.columns([1, 2])
             with col_data_hist:
                 data_busca = st.date_input("Ver presença do dia:", value=date.today(), key="hist_busca")
-            
             q_hist = """
                 SELECT a.nome, to_char(p.data_aula, 'DD/MM/YYYY') as data
                 FROM presencas p
@@ -609,38 +647,98 @@ def sistema_principal():
                 ORDER BY a.nome
             """
             hist_presenca = executar_query(q_hist, (data_busca, op_c[sel_t]), fetch=True)
-            
             with col_resumo_hist:
                 if hist_presenca:
                     st.success(f"✅ Total: {len(hist_presenca)} alunos presentes.")
                     df_hist_p = pd.DataFrame(hist_presenca, columns=['Aluno', 'Data'])
                     st.dataframe(df_hist_p, use_container_width=True, hide_index=True)
-                else:
-                    st.info("📭 Ninguém marcado nesta data para esta turma.")
-
+                else: st.info("📭 Ninguém marcado nesta data para esta turma.")
         else: st.warning("Cadastre turmas em Configurações.")
 
-    # --- ABA 4: CONFIGURAÇÕES ---
+    # --- ABA NOVA: COMUNICAÇÃO (HÍBRIDA) ---
+    with tab_msg:
+        st.header("📢 Central de Comunicação")
+        
+        tab_zap, tab_mural = st.tabs(["💬 WhatsApp Individual", "📌 Mural de Avisos"])
+        
+        # --- SUB-ABA: WHATSAPP ---
+        with tab_zap:
+            st.markdown("Envie mensagens rápidas para seus alunos.")
+            lista_completa = executar_query("SELECT id, nome, telefone FROM alunos ORDER BY nome", fetch=True)
+            if lista_completa:
+                mapa_msg = {a['nome']: a for a in lista_completa}
+                aluno_msg = st.selectbox("Enviar mensagem para:", list(mapa_msg.keys()))
+                
+                if aluno_msg:
+                    dados_msg = mapa_msg[aluno_msg]
+                    telefone_msg = dados_msg['telefone']
+                    
+                    tipo_msg = st.selectbox("Motivo da Mensagem:", [
+                        "Ausência (Sumido)",
+                        "Cobrança de Mensalidade",
+                        "Parabéns (Aniversário)",
+                        "Aviso de Graduação",
+                        "Personalizada"
+                    ])
+                    
+                    texto_base = ""
+                    if tipo_msg == "Ausência (Sumido)":
+                        texto_base = f"Fala {aluno_msg}, tudo bem? 🥋\n\nSentimos sua falta nos treinos essa semana! Tá tudo certo? Bora voltar pro tatame!"
+                    elif tipo_msg == "Cobrança de Mensalidade":
+                        texto_base = f"Olá {aluno_msg}, tudo bem? 🥋\n\nPassando pra lembrar sobre a mensalidade deste mês. Quando puder, me dá um alô!"
+                    elif tipo_msg == "Parabéns (Aniversário)":
+                        texto_base = f"Parabéns, {aluno_msg}! 🎉🥋\n\nMuitos anos de vida e muito Jiu-Jitsu pra você! Oss!"
+                    elif tipo_msg == "Aviso de Graduação":
+                        texto_base = f"Grande {aluno_msg}! 🥋\n\nTenho boas notícias sobre sua graduação. Não falte ao próximo treino!"
+                    
+                    txt_final = st.text_area("Texto da Mensagem (pode editar):", value=texto_base, height=150)
+                    
+                    if telefone_msg:
+                        texto_encoded = urllib.parse.quote(txt_final)
+                        link_wa = f"https://wa.me/55{telefone_msg}?text={texto_encoded}"
+                        st.link_button(f"🚀 Enviar WhatsApp para {aluno_msg}", link_wa, type="primary")
+                    else:
+                        st.error("Este aluno não tem telefone cadastrado.")
+
+        # --- SUB-ABA: MURAL ---
+        with tab_mural:
+            st.markdown("Poste avisos que aparecerão para **todos os alunos** ao fazerem login.")
+            
+            with st.form("novo_aviso"):
+                tit_aviso = st.text_input("Título do Aviso (Ex: Seminário)")
+                msg_aviso = st.text_area("Mensagem Completa")
+                if st.form_submit_button("📌 Publicar no Mural"):
+                    executar_query("INSERT INTO mural_avisos (titulo, mensagem) VALUES (%s, %s)", (tit_aviso, msg_aviso))
+                    st.success("Aviso publicado!")
+                    time.sleep(1)
+                    st.rerun()
+            
+            st.divider()
+            st.subheader("Avisos Ativos")
+            avisos_ativos = executar_query("SELECT id, titulo, mensagem, data_postagem FROM mural_avisos WHERE ativo = TRUE ORDER BY id DESC", fetch=True)
+            if avisos_ativos:
+                for av in avisos_ativos:
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        st.info(f"**{av['titulo']}** ({av['data_postagem']})\n\n{av['mensagem']}")
+                    with c2:
+                        if st.button("🗑️ Apagar", key=f"del_av_{av['id']}"):
+                            executar_query("UPDATE mural_avisos SET ativo = FALSE WHERE id = %s", (av['id'],))
+                            st.rerun()
+            else:
+                st.write("Nenhum aviso ativo no momento.")
+
+    # --- ABA 5: CONFIGURAÇÕES ---
     with tab_regras:
         st.header("Configurações e Backup")
-        
         st.subheader("💾 Backup e Dados")
         st.markdown("Baixe a lista completa de alunos para ter um backup seguro no seu computador.")
-        
         todos_alunos = executar_query("SELECT * FROM alunos", fetch=True)
         if todos_alunos:
             df_export = pd.DataFrame(todos_alunos)
             csv = converter_df_para_csv(df_export)
-            st.download_button(
-                label="📥 Baixar Planilha Completa (Excel/CSV)",
-                data=csv,
-                file_name=f"backup_alunos_{date.today()}.csv",
-                mime="text/csv",
-                type="primary"
-            )
-
+            st.download_button(label="📥 Baixar Planilha Completa (Excel/CSV)", data=csv, file_name=f"backup_alunos_{date.today()}.csv", mime="text/csv", type="primary")
         st.divider()
-
         c_t1, c_t2 = st.columns(2)
         with c_t1:
             st.subheader("🏫 Gestão de Turmas")
