@@ -187,15 +187,15 @@ def tela_area_aluno():
             
     id_a = st.session_state.aluno_id
     
-    # --- MURAL DE AVISOS (NOVIDADE) ---
+    # --- MURAL DE AVISOS ---
     avisos = executar_query("SELECT titulo, mensagem, data_postagem FROM mural_avisos WHERE ativo = TRUE ORDER BY id DESC LIMIT 1", fetch=True)
     if avisos:
         aviso = avisos[0]
-        st.warning(f"📢 **MURAL: {aviso['titulo']}**\n\n{aviso['mensagem']}\n\n*(Postado em {aviso['data_postagem'].strftime('%d/%m')})*", icon="⚠️")
-        st.divider()
+        st.warning(f"📢 **{aviso['titulo']}**\n\n{aviso['mensagem']}", icon="⚠️")
 
     dados = executar_query("SELECT * FROM alunos WHERE id = %s", (id_a,), fetch=True)[0]
     
+    # --- CHECK-IN ---
     st.markdown("### 📍 Check-in de Treino")
     hoje = date.today()
     presenca_hoje = executar_query("SELECT id FROM presencas WHERE id_aluno = %s AND data_aula = %s", (id_a, hoje), fetch=True)
@@ -205,45 +205,72 @@ def tela_area_aluno():
         st.success("✅ Presença CONFIRMADA no treino de hoje! Bom descanso.")
     elif checkin_pendente:
         hora_formatada = checkin_pendente[0]['hora_checkin'].strftime('%H:%M')
-        st.warning(f"⏳ Check-in realizado às {hora_formatada}. Aguardando aprovação do professor.")
+        st.info(f"⏳ Check-in feito às {hora_formatada}. Aguardando professor.")
     else:
-        st.info("Vai treinar hoje? Faça seu check-in para garantir sua presença.")
         if st.button("💪 Fazer Check-in Agora", type="primary", use_container_width=True):
             executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, CURRENT_DATE, CURRENT_TIME - INTERVAL '3 hours')", (id_a,))
             st.balloons()
-            st.toast("Check-in enviado! Avise o professor.", icon="📨")
+            st.toast("Check-in enviado!", icon="📨")
             time.sleep(2)
             st.rerun()
             
     st.divider()
 
+    # --- ESTATÍSTICAS E PROGRESSO ---
     total_treinos = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s", (id_a,), fetch=True)[0][0]
     treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s", (id_a, hoje.month), fetch=True)[0][0]
     
+    # Lógica simples de Gamificação (XP)
     meta_treinos = 100 
-    progresso = min(total_treinos / meta_treinos, 1.0)
+    xp = min(total_treinos / meta_treinos, 1.0)
     
-    st.markdown("### 🚀 Próxima Meta")
-    st.progress(progresso, text=f"Progresso de Treinos: {total_treinos} aulas")
-    st.caption("Mantenha a constância para alcançar sua próxima graduação!")
-
-    st.markdown("### 📊 Seu Desempenho")
-    c1, c2, c3 = st.columns(3)
-    c1.info(f"**Faixa Atual**\n\n# {dados['faixa']}")
-    c2.metric("Graus", dados['graus'])
-    c3.metric("Treinos (Total)", total_treinos, delta=f"+{treinos_mes} este mês")
+    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+    col_kpi1.metric("Faixa Atual", dados['faixa'], f"{dados['graus']}º Grau")
+    col_kpi2.metric("Total Treinos", total_treinos)
+    col_kpi3.metric("Treinos no Mês", treinos_mes, "+1" if presenca_hoje else "0")
+    
+    st.write(f"**Nível de Experiência (XP)**")
+    st.progress(xp, text=f"{total_treinos} aulas totais")
+    st.caption("A consistência leva à perfeição. Continue treinando!")
     
     st.divider()
     
-    st.markdown("### 📜 Sua Jornada")
-    hist = executar_query("SELECT data_mudanca, faixa_nova, graus_nova, motivo FROM historico_graduacao WHERE id_aluno = %s ORDER BY data_mudanca DESC", (id_a,), fetch=True)
-    if hist:
-        for item in hist:
-            with st.container():
-                st.markdown(f"**{item['data_mudanca'].strftime('%d/%m/%Y')}** - {item['motivo']} | Faixa: `{item['faixa_nova']}` | Graus: `{item['graus_nova']}`")
-                st.markdown("---")
+    # --- RANKING DOS CASCA-GROSSAS (NOVIDADE NA ÁREA DO ALUNO) ---
+    st.subheader("🏆 Ranking do Mês (Top 5)")
+    st.markdown("Quem está treinando mais este mês?")
+    
+    q_ranking = """
+        SELECT a.nome, COUNT(p.id) as total 
+        FROM presencas p 
+        JOIN alunos a ON p.id_aluno = a.id 
+        WHERE EXTRACT(MONTH FROM p.data_aula) = EXTRACT(MONTH FROM CURRENT_DATE)
+        AND EXTRACT(YEAR FROM p.data_aula) = EXTRACT(YEAR FROM CURRENT_DATE)
+        GROUP BY a.nome 
+        ORDER BY total DESC 
+        LIMIT 5
+    """
+    ranking = executar_query(q_ranking, fetch=True)
+    
+    if ranking:
+        for i, r in enumerate(ranking, start=1):
+            if r['nome'] == st.session_state.aluno_nome:
+                # Destaque se for o próprio aluno
+                st.success(f"**#{i} {r['nome']}** - {r['total']} treinos (VOCÊ!)")
+            else:
+                st.write(f"#{i} **{r['nome']}** - {r['total']} treinos")
     else:
-        st.info("Nenhum histórico registrado ainda.")
+        st.info("O Ranking deste mês ainda está vazio. Seja o primeiro!")
+
+    st.divider()
+    
+    # --- HISTÓRICO ---
+    with st.expander("📜 Ver meu Histórico de Graduação"):
+        hist = executar_query("SELECT data_mudanca, faixa_nova, graus_nova, motivo FROM historico_graduacao WHERE id_aluno = %s ORDER BY data_mudanca DESC", (id_a,), fetch=True)
+        if hist:
+            for item in hist:
+                st.write(f"**{item['data_mudanca'].strftime('%d/%m/%Y')}** - {item['motivo']} | Faixa: `{item['faixa_nova']}`")
+        else:
+            st.write("Sem histórico.")
 
 # ==========================================
 # TELA 2: AUTO-CADASTRO
@@ -390,12 +417,10 @@ def sistema_principal():
                 st.plotly_chart(fig_area, use_container_width=True)
             else: st.info("Sem treinos nos últimos 7 dias.")
         st.divider()
-
         
         # === RANKING DE ASSIDUIDADE (NOVIDADE) ===
         st.subheader("🏆 Ranking dos Casca-Grossas (Este Mês)")
         
-        # Query para pegar os top 5 do mês atual
         q_ranking = """
             SELECT a.nome, COUNT(p.id) as total 
             FROM presencas p 
@@ -410,25 +435,20 @@ def sistema_principal():
         
         if ranking:
             col_rank_1, col_rank_rest = st.columns([1, 2])
-            
-            # Destaque para o 1º Lugar
             with col_rank_1:
                 campeao = ranking[0]
                 st.info(f"🥇 **Líder do Mês**")
                 st.metric(label=campeao['nome'], value=f"{campeao['total']} treinos")
                 if campeao['total'] > 12:
                     st.caption("🔥 Esse tá voando!")
-            
-            # Tabela do 2º ao 5º
             with col_rank_rest:
                 st.write("🔝 **Top Seguidores**")
                 for i, r in enumerate(ranking[1:], start=2):
                     st.write(f"**{i}º** {r['nome']} - `{r['total']} treinos`")
         else:
-            st.info("Nenhum treino registrado neste mês ainda. O tatame está esperando!")
+            st.info("Nenhum treino registrado neste mês ainda.")
             
         st.divider()
-
         
         st.subheader("🎓 Sugestões de Graduação")
         if st.button("🔄 Atualizar Análise Agora"):
