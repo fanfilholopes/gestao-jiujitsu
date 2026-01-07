@@ -12,7 +12,7 @@ import urllib.parse
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="SER Jiu-Jítsu - Sistema Integrado", 
-    page_icon="🥋", 
+    page_icon="logoser.jpg",
     layout="wide"
 )
 
