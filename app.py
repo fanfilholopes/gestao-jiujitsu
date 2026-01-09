@@ -8,11 +8,12 @@ import time
 import os
 import re
 import urllib.parse
+import pytz
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="SER Jiu-Jítsu - Sistema Integrado", 
-    page_icon="logoser.jpg",
+    page_icon="logoser.jpg", 
     layout="wide"
 )
 
@@ -23,6 +24,12 @@ if 'logado' not in st.session_state:
     st.session_state.logado = False
 if 'aluno_id' not in st.session_state:
     st.session_state.aluno_id = None
+
+# --- FUNÇÃO DE DATA/HORA BRASIL (NOVA) ---
+def data_hora_brasil():
+    fuso = pytz.timezone('America/Sao_Paulo')
+    agora = datetime.now(fuso)
+    return agora.date(), agora.time()
 
 # --- CONEXÃO COM O BANCO DE DADOS ---
 def get_connection():
@@ -69,7 +76,7 @@ def executar_query(query, params=None, fetch=False):
 # --- FUNÇÃO CACHEADA PARA DASHBOARD ---
 @st.cache_data(ttl=60)
 def carregar_dados_dashboard():
-    hoje = date.today()
+    hoje, _ = data_hora_brasil() # Usa data Brasil
     try:
         res_total = executar_query("SELECT COUNT(*) FROM alunos WHERE status_aluno = 'Ativo';", fetch=True)
         total_alunos = res_total[0][0] if res_total else 0
@@ -84,7 +91,7 @@ def carregar_dados_dashboard():
 # --- HELPER: CALCULAR IDADE ---
 def calcular_idade(nascimento):
     if not nascimento: return 0
-    hoje = date.today()
+    hoje, _ = data_hora_brasil()
     return hoje.year - nascimento.year - ((hoje.month, hoje.day) < (nascimento.month, nascimento.day))
 
 # --- HELPER: LIMPAR TELEFONE ---
@@ -195,11 +202,12 @@ def tela_area_aluno():
 
     dados = executar_query("SELECT * FROM alunos WHERE id = %s", (id_a,), fetch=True)[0]
     
-    # --- CHECK-IN ---
+    # --- CHECK-IN (COM DATA DO BRASIL CORRIGIDA) ---
     st.markdown("### 📍 Check-in de Treino")
-    hoje = date.today()
-    presenca_hoje = executar_query("SELECT id FROM presencas WHERE id_aluno = %s AND data_aula = %s", (id_a, hoje), fetch=True)
-    checkin_pendente = executar_query("SELECT id, hora_checkin FROM checkins WHERE id_aluno = %s AND data_checkin = %s", (id_a, hoje), fetch=True)
+    hoje_br, hora_br = data_hora_brasil() # Data correta BR
+    
+    presenca_hoje = executar_query("SELECT id FROM presencas WHERE id_aluno = %s AND data_aula = %s", (id_a, hoje_br), fetch=True)
+    checkin_pendente = executar_query("SELECT id, hora_checkin FROM checkins WHERE id_aluno = %s AND data_checkin = %s", (id_a, hoje_br), fetch=True)
     
     if presenca_hoje:
         st.success("✅ Presença CONFIRMADA no treino de hoje! Bom descanso.")
@@ -208,7 +216,8 @@ def tela_area_aluno():
         st.info(f"⏳ Check-in feito às {hora_formatada}. Aguardando professor.")
     else:
         if st.button("💪 Fazer Check-in Agora", type="primary", use_container_width=True):
-            executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, CURRENT_DATE, CURRENT_TIME - INTERVAL '3 hours')", (id_a,))
+            # AQUI ESTÁ A CORREÇÃO: Enviamos a data calculada pelo Python (BR), não a do SQL
+            executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, %s, %s)", (id_a, hoje_br, hora_br))
             st.balloons()
             st.toast("Check-in enviado!", icon="📨")
             time.sleep(2)
@@ -218,9 +227,8 @@ def tela_area_aluno():
 
     # --- ESTATÍSTICAS E PROGRESSO ---
     total_treinos = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s", (id_a,), fetch=True)[0][0]
-    treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s", (id_a, hoje.month), fetch=True)[0][0]
+    treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s", (id_a, hoje_br.month), fetch=True)[0][0]
     
-    # Lógica simples de Gamificação (XP)
     meta_treinos = 100 
     xp = min(total_treinos / meta_treinos, 1.0)
     
@@ -235,7 +243,7 @@ def tela_area_aluno():
     
     st.divider()
     
-    # --- RANKING DOS CASCA-GROSSAS (NOVIDADE NA ÁREA DO ALUNO) ---
+    # --- RANKING DOS CASCA-GROSSAS ---
     st.subheader("🏆 Ranking do Mês (Top 5)")
     st.markdown("Quem está treinando mais este mês?")
     
@@ -254,7 +262,6 @@ def tela_area_aluno():
     if ranking:
         for i, r in enumerate(ranking, start=1):
             if r['nome'] == st.session_state.aluno_nome:
-                # Destaque se for o próprio aluno
                 st.success(f"**#{i} {r['nome']}** - {r['total']} treinos (VOCÊ!)")
             else:
                 st.write(f"#{i} **{r['nome']}** - {r['total']} treinos")
@@ -263,7 +270,6 @@ def tela_area_aluno():
 
     st.divider()
     
-    # --- HISTÓRICO ---
     with st.expander("📜 Ver meu Histórico de Graduação"):
         hist = executar_query("SELECT data_mudanca, faixa_nova, graus_nova, motivo FROM historico_graduacao WHERE id_aluno = %s ORDER BY data_mudanca DESC", (id_a,), fetch=True)
         if hist:
@@ -348,7 +354,9 @@ def sistema_principal():
     
     st.title("🥋 Painel Administrativo")
     
-    # --- ÁREA DE NOTIFICAÇÕES ---
+    # --- ÁREA DE NOTIFICAÇÕES (USANDO FUSO CORRIGIDO) ---
+    hoje_br, _ = data_hora_brasil()
+    
     pendentes = executar_query("""
         SELECT c.id, c.hora_checkin, c.data_checkin, a.nome, a.id as id_aluno 
         FROM checkins c 
@@ -364,15 +372,17 @@ def sistema_principal():
                 with col_nome:
                     hora_formatada = p['hora_checkin'].strftime('%H:%M')
                     data_str = ""
-                    if p['data_checkin'] != date.today():
+                    # Compara a data do checkin com a data BR
+                    if p['data_checkin'] != hoje_br:
                         data_str = f" ({p['data_checkin'].strftime('%d/%m')})"
                     st.write(f"**{p['nome']}** às {hora_formatada}{data_str}")
                 
                 with col_btn_ok:
                     if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
+                        # Usa a data que foi salva no banco (que agora estará correta em BR)
                         executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (p['id_aluno'], p['data_checkin']))
                         executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
-                        st.toast(f"{p['nome']} confirmado na data correta!", icon="✅")
+                        st.toast(f"{p['nome']} confirmado!", icon="✅")
                         time.sleep(1)
                         st.rerun()
                 with col_btn_no:
@@ -393,10 +403,13 @@ def sistema_principal():
         total_alunos, niver_mes, dados_f, dados_freq = carregar_dados_dashboard()
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Alunos Ativos", total_alunos)
-        hoje = date.today()
-        aniversariantes_hoje = [n for n in niver_mes if n['dia'] == hoje.day]
+        
+        hoje_br, _ = data_hora_brasil()
+        aniversariantes_hoje = [n for n in niver_mes if n['dia'] == hoje_br.day]
+        
         c2.metric("Aniversariantes Hoje", len(aniversariantes_hoje))
         if aniversariantes_hoje: c2.success(f"🎉 {', '.join([n['nome'] for n in aniversariantes_hoje])}")
+        
         total_treinos_7dias = sum([d['total'] for d in dados_freq]) if dados_freq else 0
         c3.metric("Treinos na Semana", total_treinos_7dias)
         st.divider()
@@ -464,15 +477,15 @@ def sistema_principal():
                 idade = calcular_idade(alu['data_nascimento'])
                 
                 if alu['graus'] == 0:
-                    dt_grau = alu['data_faixa'] or hoje
+                    dt_grau = alu['data_faixa'] or hoje_br
                 else:
-                    dt_grau = alu['data_ultimo_grau'] or hoje
+                    dt_grau = alu['data_ultimo_grau'] or hoje_br
                 
-                dt_faixa = alu['data_faixa'] or hoje
+                dt_faixa = alu['data_faixa'] or hoje_br
                 
                 aulas_no_grau = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND data_aula >= %s", (alu['id'], dt_grau), fetch=True)[0][0]
-                meses_no_grau = (hoje - dt_grau).days // 30
-                meses_na_faixa = (hoje - dt_faixa).days // 30
+                meses_no_grau = (hoje_br - dt_grau).days // 30
+                meses_na_faixa = (hoje_br - dt_faixa).days // 30
                 
                 if idade < 16:
                     if aulas_no_grau >= 8: lista_grau.append({"Nome": alu['nome'], "Faixa": alu['faixa'], "Aulas": aulas_no_grau, "Motivo": "8+ Aulas"})
@@ -585,8 +598,8 @@ def sistema_principal():
                     faixa_atual = dados_aluno['faixa']
                     graus_atual = dados_aluno['graus']
                     total_treinos = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s", (id_alvo,), fetch=True)[0][0]
-                    hoje = date.today()
-                    treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s AND EXTRACT(YEAR FROM data_aula) = %s", (id_alvo, hoje.month, hoje.year), fetch=True)[0][0]
+                    hoje_br, _ = data_hora_brasil()
+                    treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s AND EXTRACT(YEAR FROM data_aula) = %s", (id_alvo, hoje_br.month, hoje_br.year), fetch=True)[0][0]
 
                     col_info, col_freq1, col_freq2 = st.columns([2, 1, 1])
                     with col_info: st.info(f"**Atleta:** {aluno_selecionado}\n\n**Faixa:** {faixa_atual} | **Graus:** {graus_atual}")
@@ -639,7 +652,8 @@ def sistema_principal():
             als = executar_query("SELECT id, nome FROM alunos WHERE id_turma = %s AND status_aluno = 'Ativo'", (op_c[sel_t],), fetch=True)
             if als:
                 with st.form("chamada"):
-                    data_aula_manual = st.date_input("📅 Data da Aula", value=date.today())
+                    hoje_br, _ = data_hora_brasil()
+                    data_aula_manual = st.date_input("📅 Data da Aula", value=hoje_br)
                     st.write("Marque quem estava presente:")
                     pres = []
                     cols = st.columns(3)
@@ -658,11 +672,12 @@ def sistema_principal():
             st.subheader("🔎 Consultar Presenças Anteriores")
             col_data_hist, col_resumo_hist = st.columns([1, 2])
             with col_data_hist:
-                data_busca = st.date_input("Ver presença do dia:", value=date.today(), key="hist_busca")
+                hoje_br, _ = data_hora_brasil()
+                data_busca = st.date_input("Ver presença do dia:", value=hoje_br, key="hist_busca")
             q_hist = """
                 SELECT a.nome, to_char(p.data_aula, 'DD/MM/YYYY') as data
-                FROM presencas p
-                JOIN alunos a ON p.id_aluno = a.id
+                FROM presencas p 
+                JOIN alunos a ON p.id_aluno = a.id 
                 WHERE p.data_aula = %s AND a.id_turma = %s
                 ORDER BY a.nome
             """
