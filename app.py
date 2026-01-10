@@ -31,8 +31,10 @@ def data_hora_brasil():
     agora = datetime.now(fuso)
     return agora.date(), agora.time()
 
-# --- CONEXÃO COM O BANCO DE DADOS ---
-def get_connection():
+# --- CONEXÃO OTIMIZADA (CACHEADA) ---
+@st.cache_resource
+def get_db_connection():
+    """Cria a conexão apenas uma vez e a reutiliza (Connection Pooling simples)."""
     try:
         if "url" in st.secrets["postgres"]:
             conn = psycopg2.connect(st.secrets["postgres"]["url"])
@@ -46,35 +48,39 @@ def get_connection():
             )
         return conn
     except Exception as e:
-        st.error(f"Erro detalhado de conexão: {e}")
+        st.error(f"Erro de Conexão Inicial: {e}")
         return None
 
-# --- FUNÇÃO PARA EXECUTAR COMANDOS ---
+# --- FUNÇÃO PARA EXECUTAR COMANDOS (OTIMIZADA) ---
 def executar_query(query, params=None, fetch=False):
-    conn = get_connection()
-    if conn is None:
-        return [] if fetch else False
+    # 1. Pega a conexão do cache
+    conn = get_db_connection()
+    
+    # 2. Verifica se a conexão caiu (Closed > 0 significa fechada)
+    if conn is None or conn.closed != 0:
+        st.cache_resource.clear() # Limpa o cache estragado
+        conn = get_db_connection() # Tenta reconectar
+    
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute(query, params)
-        
-        if fetch:
-            resultado = cur.fetchall()
-            if "INSERT" in query.upper() or "UPDATE" in query.upper():
-                conn.commit()
-        else:
-            conn.commit()
-            resultado = True
+        # 3. Usa um cursor temporário (abre e fecha só o cursor, mantém a conexão)
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(query, params)
             
-        cur.close()
-        conn.close()
-        return resultado
+            if fetch:
+                return cur.fetchall()
+            else:
+                conn.commit()
+                return True
     except Exception as e:
+        # Se der erro de transação, faz rollback para não travar o banco
+        if conn and conn.closed == 0:
+            conn.rollback()
         st.error(f"Erro no banco: {e}")
         return [] if fetch else False
 
-# --- FUNÇÃO CACHEADA PARA DASHBOARD ---
-@st.cache_data(ttl=60)
+# --- FUNÇÃO CACHEADA PARA DASHBOARD (TTL AUMENTADO) ---
+# Atualiza os dados pesados apenas a cada 5 minutos (300s)
+@st.cache_data(ttl=300)
 def carregar_dados_dashboard():
     hoje, _ = data_hora_brasil()
     try:
@@ -217,6 +223,7 @@ def tela_area_aluno():
     else:
         if st.button("💪 Fazer Check-in Agora", type="primary", use_container_width=True):
             executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, %s, %s)", (id_a, hoje_br, hora_br))
+            st.cache_data.clear() # Limpa cache pra mostrar status novo
             st.balloons()
             st.toast("Check-in enviado!", icon="📨")
             time.sleep(2)
@@ -242,10 +249,9 @@ def tela_area_aluno():
     
     st.divider()
     
-    # --- RANKING DOS CASCA-GROSSAS (SEPARADO POR ABAS NO ALUNO) ---
+    # --- RANKING DOS CASCA-GROSSAS ---
     st.subheader("🏆 Ranking do Mês (Top 5)")
     
-    # Query Base
     q_base = """
         SELECT a.nome, COUNT(p.id) as total 
         FROM presencas p 
@@ -345,6 +351,7 @@ def tela_cadastro_aluno():
                     novo_id = executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_limpo, data_faixa_auto, dt_grau_final), fetch=True)[0][0]
                     executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_nova, graus_nova, data_mudanca, motivo) 
                                       VALUES (%s, %s, %s, %s, 'Cadastro Inicial')""", (novo_id, faixa_auto, graus_auto, dt_grau_final))
+                    st.cache_data.clear() # Limpa cache do admin
                     st.balloons()
                     st.toast(f"Cadastro de {nome_auto} realizado!", icon="✅")
                     time.sleep(3)
@@ -368,7 +375,7 @@ def sistema_principal():
     
     st.title("🥋 Painel Administrativo")
     
-    # --- ÁREA DE NOTIFICAÇÕES (USANDO FUSO CORRIGIDO E TRIM NOS NOMES) ---
+    # --- ÁREA DE NOTIFICAÇÕES ---
     hoje_br, _ = data_hora_brasil()
     
     pendentes = executar_query("""
@@ -388,13 +395,13 @@ def sistema_principal():
                     data_str = ""
                     if p['data_checkin'] != hoje_br:
                         data_str = f" ({p['data_checkin'].strftime('%d/%m')})"
-                    # .strip() remove espaços extras
                     st.write(f"**{p['nome'].strip()}** às {hora_formatada}{data_str}")
                 
                 with col_btn_ok:
                     if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
                         executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (p['id_aluno'], p['data_checkin']))
                         executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
+                        st.cache_data.clear() # Limpa cache do dashboard
                         st.toast(f"{p['nome'].strip()} confirmado!", icon="✅")
                         time.sleep(1)
                         st.rerun()
@@ -413,7 +420,9 @@ def sistema_principal():
     # --- ABA 1: DASHBOARD ---
     with tab_dash:
         st.header("Visão Geral")
+        # AQUI O CACHE ENTRA EM AÇÃO (Carrega mais rápido)
         total_alunos, niver_mes, dados_f, dados_freq = carregar_dados_dashboard()
+        
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Alunos Ativos", total_alunos)
         
@@ -442,7 +451,7 @@ def sistema_principal():
             else: st.info("Sem treinos nos últimos 7 dias.")
         st.divider()
         
-        # === RANKING DE ASSIDUIDADE SEPARADO (NOVIDADE) ===
+        # === RANKING DE ASSIDUIDADE SEPARADO ===
         st.subheader("🏆 Ranking dos Casca-Grossas (Este Mês)")
         
         q_base = """
@@ -455,12 +464,10 @@ def sistema_principal():
         
         col_r_adulto, col_r_kids = st.columns(2)
         
-        # --- RANKING ADULTOS (> 16 ANOS) ---
         with col_r_adulto:
             st.markdown("### 🦍 Adultos")
             q_adulto = q_base + " AND a.data_nascimento <= CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
             rank_ad = executar_query(q_adulto, fetch=True)
-            
             if rank_ad:
                 c_ad = rank_ad[0]
                 st.info(f"🥇 **{c_ad['nome'].strip()}** ({c_ad['total']} treinos)")
@@ -469,12 +476,10 @@ def sistema_principal():
             else:
                 st.info("Sem treinos de adultos este mês.")
 
-        # --- RANKING KIDS (<= 16 ANOS) ---
         with col_r_kids:
             st.markdown("### 🦁 Kids")
             q_kids = q_base + " AND a.data_nascimento > CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
             rank_kd = executar_query(q_kids, fetch=True)
-            
             if rank_kd:
                 c_kd = rank_kd[0]
                 st.info(f"🥇 **{c_kd['nome'].strip()}** ({c_kd['total']} treinos)")
@@ -563,10 +568,7 @@ def sistema_principal():
             with st.form("cad_novo_admin"):
                 c1, c2 = st.columns(2)
                 nome = c1.text_input("Nome Completo")
-                
-                # AQUI ESTÁ A CORREÇÃO DA DATA (MIN_VALUE 1920)
-                nasc = c1.date_input("Nascimento", value=date(2000, 1, 1), min_value=date(1920, 1, 1), max_value=date.today(), format="DD/MM/YYYY")
-                
+                nasc = c1.date_input("Nascimento", value=date(2010, 1, 1), min_value=date(1920, 1, 1), max_value=date.today(), format="DD/MM/YYYY")
                 faixa = c1.selectbox("Faixa", ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde", "Azul", "Roxa", "Marrom", "Preta"])
                 graus = c2.number_input("Graus", 0, 10, 0)
                 d_faixa = c2.date_input("Data da Faixa Atual", format="DD/MM/YYYY")
@@ -590,7 +592,7 @@ def sistema_principal():
                         novo_id = executar_query(q, (nome, nasc, faixa, graus, id_t, resp, tel_limpo, d_faixa, d_grau), fetch=True)[0][0]
                         executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_nova, graus_nova, data_mudanca, motivo) 
                                           VALUES (%s, %s, %s, %s, 'Cadastro Manual')""", (novo_id, faixa, graus, d_grau))
-                        st.cache_data.clear()
+                        st.cache_data.clear() # LIMPA CACHE APÓS CADASTRO
                         st.toast("Cadastrado com sucesso!", icon="✅")
                         st.rerun()
         else:
@@ -609,7 +611,7 @@ def sistema_principal():
                     for _, r in df_up.iterrows():
                         q_up = """UPDATE alunos SET nome=%s, data_nascimento=%s, faixa=%s, graus=%s, data_faixa=%s, data_ultimo_grau=%s, nome_responsavel=%s, telefone=%s WHERE id=%s"""
                         executar_query(q_up, (r['Nome'], r['Nascimento'], r['Faixa'], r['Graus'], r['Data Faixa'], r['Data Último Grau'], r['Responsável'], r['Telefone'], r['ID']))
-                    st.cache_data.clear()
+                    st.cache_data.clear() # LIMPA CACHE APÓS UPDATE
                     st.toast("Tabela atualizada!", icon="💾")
                     time.sleep(1)
                     st.rerun()
@@ -637,7 +639,7 @@ def sistema_principal():
                             novo_grau = graus_atual + 1
                             executar_query("UPDATE alunos SET graus = %s, data_ultimo_grau = CURRENT_DATE WHERE id = %s", (novo_grau, id_alvo))
                             executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_anterior, graus_anterior, faixa_nova, graus_nova, motivo) VALUES (%s, %s, %s, %s, %s, 'Adição de Grau')""", (id_alvo, faixa_atual, graus_atual, faixa_atual, novo_grau))
-                            st.cache_data.clear()
+                            st.cache_data.clear() # LIMPA CACHE APÓS GRAU
                             st.toast(f"Grau adicionado!", icon="🎉")
                             time.sleep(1)
                             st.rerun()
@@ -648,7 +650,7 @@ def sistema_principal():
                             else:
                                 executar_query("UPDATE alunos SET faixa = %s, graus = 0, data_faixa = CURRENT_DATE, data_ultimo_grau = CURRENT_DATE WHERE id = %s", (nova_faixa_promo, id_alvo))
                                 executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_anterior, graus_anterior, faixa_nova, graus_nova, motivo) VALUES (%s, %s, %s, %s, 0, 'Promoção de Faixa')""", (id_alvo, faixa_atual, graus_atual, nova_faixa_promo))
-                                st.cache_data.clear()
+                                st.cache_data.clear() # LIMPA CACHE APÓS FAIXA
                                 st.toast(f"Promovido para {nova_faixa_promo}!", icon="🥋")
                                 time.sleep(1)
                                 st.rerun()
@@ -689,7 +691,7 @@ def sistema_principal():
                     if st.form_submit_button("✅ Registrar Presenças"):
                         for id_a in pres: 
                             executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (id_a, data_aula_manual))
-                        st.cache_data.clear()
+                        st.cache_data.clear() # LIMPA CACHE APÓS CHAMADA
                         st.toast(f"{len(pres)} presenças registradas para {data_aula_manual.strftime('%d/%m')}!", icon="✅")
             else: st.warning("Não há alunos ativos nesta turma.")
             
