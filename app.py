@@ -25,7 +25,7 @@ if 'logado' not in st.session_state:
 if 'aluno_id' not in st.session_state:
     st.session_state.aluno_id = None
 
-# --- FUNÇÃO DE DATA/HORA BRASIL (NOVA) ---
+# --- FUNÇÃO DE DATA/HORA BRASIL ---
 def data_hora_brasil():
     fuso = pytz.timezone('America/Sao_Paulo')
     agora = datetime.now(fuso)
@@ -76,7 +76,7 @@ def executar_query(query, params=None, fetch=False):
 # --- FUNÇÃO CACHEADA PARA DASHBOARD ---
 @st.cache_data(ttl=60)
 def carregar_dados_dashboard():
-    hoje, _ = data_hora_brasil() # Usa data Brasil
+    hoje, _ = data_hora_brasil()
     try:
         res_total = executar_query("SELECT COUNT(*) FROM alunos WHERE status_aluno = 'Ativo';", fetch=True)
         total_alunos = res_total[0][0] if res_total else 0
@@ -202,9 +202,9 @@ def tela_area_aluno():
 
     dados = executar_query("SELECT * FROM alunos WHERE id = %s", (id_a,), fetch=True)[0]
     
-    # --- CHECK-IN (COM DATA DO BRASIL CORRIGIDA) ---
+    # --- CHECK-IN ---
     st.markdown("### 📍 Check-in de Treino")
-    hoje_br, hora_br = data_hora_brasil() # Data correta BR
+    hoje_br, hora_br = data_hora_brasil()
     
     presenca_hoje = executar_query("SELECT id FROM presencas WHERE id_aluno = %s AND data_aula = %s", (id_a, hoje_br), fetch=True)
     checkin_pendente = executar_query("SELECT id, hora_checkin FROM checkins WHERE id_aluno = %s AND data_checkin = %s", (id_a, hoje_br), fetch=True)
@@ -216,7 +216,6 @@ def tela_area_aluno():
         st.info(f"⏳ Check-in feito às {hora_formatada}. Aguardando professor.")
     else:
         if st.button("💪 Fazer Check-in Agora", type="primary", use_container_width=True):
-            # AQUI ESTÁ A CORREÇÃO: Enviamos a data calculada pelo Python (BR), não a do SQL
             executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, %s, %s)", (id_a, hoje_br, hora_br))
             st.balloons()
             st.toast("Check-in enviado!", icon="📨")
@@ -225,7 +224,7 @@ def tela_area_aluno():
             
     st.divider()
 
-    # --- ESTATÍSTICAS E PROGRESSO ---
+    # --- ESTATÍSTICAS ---
     total_treinos = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s", (id_a,), fetch=True)[0][0]
     treinos_mes = executar_query("SELECT COUNT(*) FROM presencas WHERE id_aluno = %s AND EXTRACT(MONTH FROM data_aula) = %s", (id_a, hoje_br.month), fetch=True)[0][0]
     
@@ -243,30 +242,45 @@ def tela_area_aluno():
     
     st.divider()
     
-    # --- RANKING DOS CASCA-GROSSAS ---
+    # --- RANKING DOS CASCA-GROSSAS (SEPARADO POR ABAS NO ALUNO) ---
     st.subheader("🏆 Ranking do Mês (Top 5)")
-    st.markdown("Quem está treinando mais este mês?")
     
-    q_ranking = """
+    # Query Base
+    q_base = """
         SELECT a.nome, COUNT(p.id) as total 
         FROM presencas p 
         JOIN alunos a ON p.id_aluno = a.id 
         WHERE EXTRACT(MONTH FROM p.data_aula) = EXTRACT(MONTH FROM CURRENT_DATE)
         AND EXTRACT(YEAR FROM p.data_aula) = EXTRACT(YEAR FROM CURRENT_DATE)
-        GROUP BY a.nome 
-        ORDER BY total DESC 
-        LIMIT 5
     """
-    ranking = executar_query(q_ranking, fetch=True)
     
-    if ranking:
-        for i, r in enumerate(ranking, start=1):
-            if r['nome'] == st.session_state.aluno_nome:
-                st.success(f"**#{i} {r['nome']}** - {r['total']} treinos (VOCÊ!)")
-            else:
-                st.write(f"#{i} **{r['nome']}** - {r['total']} treinos")
-    else:
-        st.info("O Ranking deste mês ainda está vazio. Seja o primeiro!")
+    tab_rank_adulto, tab_rank_kids = st.tabs(["🦍 Adultos", "🦁 Kids"])
+    
+    with tab_rank_adulto:
+        q_adulto = q_base + " AND a.data_nascimento <= CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
+        rank_ad = executar_query(q_adulto, fetch=True)
+        if rank_ad:
+            for i, r in enumerate(rank_ad, start=1):
+                nome_limpo = r['nome'].strip()
+                if r['nome'] == st.session_state.aluno_nome:
+                    st.success(f"**#{i} {nome_limpo}** - {r['total']} treinos (VOCÊ!)")
+                else:
+                    st.write(f"#{i} **{nome_limpo}** - {r['total']} treinos")
+        else:
+            st.info("Ranking Adulto vazio.")
+
+    with tab_rank_kids:
+        q_kids = q_base + " AND a.data_nascimento > CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
+        rank_kd = executar_query(q_kids, fetch=True)
+        if rank_kd:
+            for i, r in enumerate(rank_kd, start=1):
+                nome_limpo = r['nome'].strip()
+                if r['nome'] == st.session_state.aluno_nome:
+                    st.success(f"**#{i} {nome_limpo}** - {r['total']} treinos (VOCÊ!)")
+                else:
+                    st.write(f"#{i} **{nome_limpo}** - {r['total']} treinos")
+        else:
+            st.info("Ranking Kids vazio.")
 
     st.divider()
     
@@ -295,7 +309,7 @@ def tela_cadastro_aluno():
         nome_auto = col1.text_input("Nome Completo *")
         nasc_auto = col1.date_input("Data de Nascimento", value=date(2000, 1, 1), min_value=date(1920, 1, 1), max_value=date.today(), format="DD/MM/YYYY")
         col_tel, col_resp = st.columns(2)
-        tel_auto = col_tel.text_input("WhatsApp (Somente números, com DDD) *")
+        tel_auto = col_tel.text_input("WhatsApp (Somente números, Ex: 85222223333) *")
         resp_auto = col_resp.text_input("Nome do Responsável (se menor de idade)")
         
         st.divider()
@@ -354,7 +368,7 @@ def sistema_principal():
     
     st.title("🥋 Painel Administrativo")
     
-    # --- ÁREA DE NOTIFICAÇÕES (USANDO FUSO CORRIGIDO) ---
+    # --- ÁREA DE NOTIFICAÇÕES (USANDO FUSO CORRIGIDO E TRIM NOS NOMES) ---
     hoje_br, _ = data_hora_brasil()
     
     pendentes = executar_query("""
@@ -372,17 +386,16 @@ def sistema_principal():
                 with col_nome:
                     hora_formatada = p['hora_checkin'].strftime('%H:%M')
                     data_str = ""
-                    # Compara a data do checkin com a data BR
                     if p['data_checkin'] != hoje_br:
                         data_str = f" ({p['data_checkin'].strftime('%d/%m')})"
-                    st.write(f"**{p['nome']}** às {hora_formatada}{data_str}")
+                    # .strip() remove espaços extras
+                    st.write(f"**{p['nome'].strip()}** às {hora_formatada}{data_str}")
                 
                 with col_btn_ok:
                     if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
-                        # Usa a data que foi salva no banco (que agora estará correta em BR)
                         executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (p['id_aluno'], p['data_checkin']))
                         executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
-                        st.toast(f"{p['nome']} confirmado!", icon="✅")
+                        st.toast(f"{p['nome'].strip()} confirmado!", icon="✅")
                         time.sleep(1)
                         st.rerun()
                 with col_btn_no:
@@ -404,11 +417,9 @@ def sistema_principal():
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Alunos Ativos", total_alunos)
         
-        hoje_br, _ = data_hora_brasil()
         aniversariantes_hoje = [n for n in niver_mes if n['dia'] == hoje_br.day]
-        
         c2.metric("Aniversariantes Hoje", len(aniversariantes_hoje))
-        if aniversariantes_hoje: c2.success(f"🎉 {', '.join([n['nome'] for n in aniversariantes_hoje])}")
+        if aniversariantes_hoje: c2.success(f"🎉 {', '.join([n['nome'].strip() for n in aniversariantes_hoje])}")
         
         total_treinos_7dias = sum([d['total'] for d in dados_freq]) if dados_freq else 0
         c3.metric("Treinos na Semana", total_treinos_7dias)
@@ -431,35 +442,46 @@ def sistema_principal():
             else: st.info("Sem treinos nos últimos 7 dias.")
         st.divider()
         
-        # === RANKING DE ASSIDUIDADE (NOVIDADE) ===
+        # === RANKING DE ASSIDUIDADE SEPARADO (NOVIDADE) ===
         st.subheader("🏆 Ranking dos Casca-Grossas (Este Mês)")
         
-        q_ranking = """
+        q_base = """
             SELECT a.nome, COUNT(p.id) as total 
             FROM presencas p 
             JOIN alunos a ON p.id_aluno = a.id 
             WHERE EXTRACT(MONTH FROM p.data_aula) = EXTRACT(MONTH FROM CURRENT_DATE)
             AND EXTRACT(YEAR FROM p.data_aula) = EXTRACT(YEAR FROM CURRENT_DATE)
-            GROUP BY a.nome 
-            ORDER BY total DESC 
-            LIMIT 5
         """
-        ranking = executar_query(q_ranking, fetch=True)
         
-        if ranking:
-            col_rank_1, col_rank_rest = st.columns([1, 2])
-            with col_rank_1:
-                campeao = ranking[0]
-                st.info(f"🥇 **Líder do Mês**")
-                st.metric(label=campeao['nome'], value=f"{campeao['total']} treinos")
-                if campeao['total'] > 12:
-                    st.caption("🔥 Esse tá voando!")
-            with col_rank_rest:
-                st.write("🔝 **Top Seguidores**")
-                for i, r in enumerate(ranking[1:], start=2):
-                    st.write(f"**{i}º** {r['nome']} - `{r['total']} treinos`")
-        else:
-            st.info("Nenhum treino registrado neste mês ainda.")
+        col_r_adulto, col_r_kids = st.columns(2)
+        
+        # --- RANKING ADULTOS (> 16 ANOS) ---
+        with col_r_adulto:
+            st.markdown("### 🦍 Adultos")
+            q_adulto = q_base + " AND a.data_nascimento <= CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
+            rank_ad = executar_query(q_adulto, fetch=True)
+            
+            if rank_ad:
+                c_ad = rank_ad[0]
+                st.info(f"🥇 **{c_ad['nome'].strip()}** ({c_ad['total']} treinos)")
+                for i, r in enumerate(rank_ad[1:], start=2):
+                    st.write(f"**{i}º** {r['nome'].strip()} - {r['total']}")
+            else:
+                st.info("Sem treinos de adultos este mês.")
+
+        # --- RANKING KIDS (<= 16 ANOS) ---
+        with col_r_kids:
+            st.markdown("### 🦁 Kids")
+            q_kids = q_base + " AND a.data_nascimento > CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
+            rank_kd = executar_query(q_kids, fetch=True)
+            
+            if rank_kd:
+                c_kd = rank_kd[0]
+                st.info(f"🥇 **{c_kd['nome'].strip()}** ({c_kd['total']} treinos)")
+                for i, r in enumerate(rank_kd[1:], start=2):
+                    st.write(f"**{i}º** {r['nome'].strip()} - {r['total']}")
+            else:
+                st.info("Sem treinos kids este mês.")
             
         st.divider()
         
@@ -541,7 +563,10 @@ def sistema_principal():
             with st.form("cad_novo_admin"):
                 c1, c2 = st.columns(2)
                 nome = c1.text_input("Nome Completo")
-                nasc = c1.date_input("Nascimento", value=date(2010, 1, 1), format="DD/MM/YYYY")
+                
+                # AQUI ESTÁ A CORREÇÃO DA DATA (MIN_VALUE 1920)
+                nasc = c1.date_input("Nascimento", value=date(2000, 1, 1), min_value=date(1920, 1, 1), max_value=date.today(), format="DD/MM/YYYY")
+                
                 faixa = c1.selectbox("Faixa", ["Branca", "Cinza/Branca", "Cinza", "Cinza/Preta", "Amarela", "Laranja", "Verde", "Azul", "Roxa", "Marrom", "Preta"])
                 graus = c2.number_input("Graus", 0, 10, 0)
                 d_faixa = c2.date_input("Data da Faixa Atual", format="DD/MM/YYYY")
