@@ -13,7 +13,7 @@ import pytz
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="SER Jiu-Jítsu - Sistema Integrado", 
-    page_icon="logoser.jpg", 
+    page_icon="logo.png", 
     layout="wide"
 )
 
@@ -34,7 +34,7 @@ def data_hora_brasil():
 # --- CONEXÃO OTIMIZADA (CACHEADA) ---
 @st.cache_resource
 def get_db_connection():
-    """Cria a conexão apenas uma vez e a reutiliza (Connection Pooling simples)."""
+    """Cria a conexão apenas uma vez e a reutiliza."""
     try:
         if "url" in st.secrets["postgres"]:
             conn = psycopg2.connect(st.secrets["postgres"]["url"])
@@ -51,48 +51,71 @@ def get_db_connection():
         st.error(f"Erro de Conexão Inicial: {e}")
         return None
 
-# --- FUNÇÃO PARA EXECUTAR COMANDOS (OTIMIZADA) ---
+# --- FUNÇÃO PARA EXECUTAR COMANDOS ---
 def executar_query(query, params=None, fetch=False):
-    # 1. Pega a conexão do cache
     conn = get_db_connection()
-    
-    # 2. Verifica se a conexão caiu (Closed > 0 significa fechada)
     if conn is None or conn.closed != 0:
-        st.cache_resource.clear() # Limpa o cache estragado
-        conn = get_db_connection() # Tenta reconectar
+        st.cache_resource.clear()
+        conn = get_db_connection()
     
     try:
-        # 3. Usa um cursor temporário (abre e fecha só o cursor, mantém a conexão)
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(query, params)
-            
             if fetch:
                 return cur.fetchall()
             else:
                 conn.commit()
                 return True
     except Exception as e:
-        # Se der erro de transação, faz rollback para não travar o banco
-        if conn and conn.closed == 0:
-            conn.rollback()
+        if conn and conn.closed == 0: conn.rollback()
         st.error(f"Erro no banco: {e}")
         return [] if fetch else False
 
-# --- FUNÇÃO CACHEADA PARA DASHBOARD (TTL AUMENTADO) ---
-# Atualiza os dados pesados apenas a cada 5 minutos (300s)
+# --- DASHBOARD (CORRIGIDO PARA MOSTRAR AULAS E PRESENÇAS) ---
 @st.cache_data(ttl=300)
 def carregar_dados_dashboard():
-    hoje, _ = data_hora_brasil()
+    hoje_br, _ = data_hora_brasil()
     try:
+        # 1. Total Alunos Ativos
         res_total = executar_query("SELECT COUNT(*) FROM alunos WHERE status_aluno = 'Ativo';", fetch=True)
         total_alunos = res_total[0][0] if res_total else 0
-        niver_mes = executar_query("SELECT nome, EXTRACT(DAY FROM data_nascimento) as dia FROM alunos WHERE EXTRACT(MONTH FROM data_nascimento) = %s ORDER BY dia;", (hoje.month,), fetch=True)
+        
+        # 2. Aniversariantes do MÊS
+        niver_mes = executar_query("""
+            SELECT nome, EXTRACT(DAY FROM data_nascimento) as dia 
+            FROM alunos 
+            WHERE EXTRACT(MONTH FROM data_nascimento) = %s 
+            ORDER BY dia;
+        """, (hoje_br.month,), fetch=True)
+        
+        # 3. Distribuição de Faixas
         dados_faixa = executar_query("SELECT faixa, COUNT(*) as total FROM alunos WHERE status_aluno = 'Ativo' GROUP BY faixa;", fetch=True)
-        data_limite = hoje - timedelta(days=7)
-        dados_freq = executar_query("SELECT data_aula, COUNT(*) as total FROM presencas WHERE data_aula >= %s GROUP BY data_aula ORDER BY data_aula", (data_limite,), fetch=True)
-        return total_alunos, niver_mes, dados_faixa, dados_freq
+        
+        # 4. Evolução Histórica (Volume de Presenças)
+        q_evolucao = """
+            SELECT TO_CHAR(data_aula, 'YYYY-MM') as mes_ano, COUNT(*) as total 
+            FROM presencas 
+            WHERE data_aula >= CURRENT_DATE - INTERVAL '6 months' 
+            GROUP BY mes_ano 
+            ORDER BY mes_ano;
+        """
+        dados_evolucao = executar_query(q_evolucao, fetch=True)
+        
+        # 5. Métricas do Mês Atual (Aulas vs Presenças)
+        # COUNT(*) = Total de check-ins (Presenças)
+        # COUNT(DISTINCT data_aula) = Dias que tiveram aula (Aulas dadas)
+        q_mes_atual = """
+            SELECT COUNT(*) as total_presencas, COUNT(DISTINCT data_aula) as dias_aula 
+            FROM presencas 
+            WHERE EXTRACT(MONTH FROM data_aula) = %s AND EXTRACT(YEAR FROM data_aula) = %s
+        """
+        dados_mes = executar_query(q_mes_atual, (hoje_br.month, hoje_br.year), fetch=True)
+        total_presencas_mes = dados_mes[0]['total_presencas'] if dados_mes else 0
+        dias_aula_mes = dados_mes[0]['dias_aula'] if dados_mes else 0
+        
+        return total_alunos, niver_mes, dados_faixa, dados_evolucao, total_presencas_mes, dias_aula_mes
     except:
-        return 0, [], [], []
+        return 0, [], [], [], 0, 0
 
 # --- HELPER: CALCULAR IDADE ---
 def calcular_idade(nascimento):
@@ -223,7 +246,7 @@ def tela_area_aluno():
     else:
         if st.button("💪 Fazer Check-in Agora", type="primary", use_container_width=True):
             executar_query("INSERT INTO checkins (id_aluno, data_checkin, hora_checkin) VALUES (%s, %s, %s)", (id_a, hoje_br, hora_br))
-            st.cache_data.clear() # Limpa cache pra mostrar status novo
+            st.cache_data.clear()
             st.balloons()
             st.toast("Check-in enviado!", icon="📨")
             time.sleep(2)
@@ -351,7 +374,7 @@ def tela_cadastro_aluno():
                     novo_id = executar_query(q_auto, (nome_auto, nasc_auto, faixa_auto, graus_auto, id_t_auto, resp_auto, tel_limpo, data_faixa_auto, dt_grau_final), fetch=True)[0][0]
                     executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_nova, graus_nova, data_mudanca, motivo) 
                                       VALUES (%s, %s, %s, %s, 'Cadastro Inicial')""", (novo_id, faixa_auto, graus_auto, dt_grau_final))
-                    st.cache_data.clear() # Limpa cache do admin
+                    st.cache_data.clear()
                     st.balloons()
                     st.toast(f"Cadastro de {nome_auto} realizado!", icon="✅")
                     time.sleep(3)
@@ -401,7 +424,7 @@ def sistema_principal():
                     if st.button("✅ Aprovar", key=f"ok_{p['id']}"):
                         executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (p['id_aluno'], p['data_checkin']))
                         executar_query("DELETE FROM checkins WHERE id = %s", (p['id'],))
-                        st.cache_data.clear() # Limpa cache do dashboard
+                        st.cache_data.clear()
                         st.toast(f"{p['nome'].strip()} confirmado!", icon="✅")
                         time.sleep(1)
                         st.rerun()
@@ -417,44 +440,58 @@ def sistema_principal():
         "📊 Dashboard", "👥 Gestão Alunos", "📅 Chamada", "📢 Comunicação", "⚙️ Configurações"
     ])
 
-    # --- ABA 1: DASHBOARD ---
+    # --- ABA 1: DASHBOARD (MÉTRICAS CORRIGIDAS) ---
     with tab_dash:
         st.header("Visão Geral")
-        # AQUI O CACHE ENTRA EM AÇÃO (Carrega mais rápido)
-        total_alunos, niver_mes, dados_f, dados_freq = carregar_dados_dashboard()
+        # Carrega dados do Cache
+        total_alunos, niver_mes, dados_f, dados_evolucao, total_presencas_mes, dias_aula_mes = carregar_dados_dashboard()
         
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
+        
         c1.metric("Total Alunos Ativos", total_alunos)
         
-        aniversariantes_hoje = [n for n in niver_mes if n['dia'] == hoje_br.day]
-        c2.metric("Aniversariantes Hoje", len(aniversariantes_hoje))
-        if aniversariantes_hoje: c2.success(f"🎉 {', '.join([n['nome'].strip() for n in aniversariantes_hoje])}")
+        # AQUI ESTÁ A CORREÇÃO: "Aulas Ministradas" usa dias distintos (4)
+        c2.metric("Aulas Ministradas (Mês)", dias_aula_mes, delta="Dias de treino")
         
-        total_treinos_7dias = sum([d['total'] for d in dados_freq]) if dados_freq else 0
-        c3.metric("Treinos na Semana", total_treinos_7dias)
+        # AQUI ESTÁ A CORREÇÃO: "Total de Presenças" usa o volume (42)
+        c3.metric("Total de Presenças (Mês)", total_presencas_mes, delta="Volume total")
+        
+        c4.metric("Aniversariantes (Mês)", len(niver_mes))
+        if niver_mes:
+            with c4.expander("Ver Lista 🎉"):
+                for n in niver_mes:
+                    st.write(f"Dia {int(n['dia'])}: {n['nome'].strip()}")
+        
         st.divider()
-        col_graf1, col_graf2 = st.columns(2)
+        
+        # --- GRÁFICOS ESTRATÉGICOS ---
+        col_graf1, col_graf2 = st.columns([2, 1])
+        
         with col_graf1:
-            st.subheader("🥋 Distribuição por Faixa")
+            st.subheader("📈 Evolução de Presenças (Volume)")
+            if dados_evolucao:
+                df_ev = pd.DataFrame(dados_evolucao, columns=['Mês', 'Total'])
+                fig_bar = px.bar(df_ev, x='Mês', y='Total', text='Total', color_discrete_sequence=['#00CC96'])
+                fig_bar.update_layout(xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("Ainda não há histórico suficiente.")
+                
+        with col_graf2:
+            st.subheader("🥋 Distribuição")
             if dados_f:
                 df_faixas = pd.DataFrame(dados_f, columns=['faixa', 'total'])
-                fig_donut = px.pie(df_faixas, values='total', names='faixa', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
-                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                fig_donut = px.pie(df_faixas, values='total', names='faixa', hole=0.5, color_discrete_sequence=px.colors.sequential.RdBu)
+                fig_donut.update_traces(textposition='inside', textinfo='percent+label', showlegend=False)
                 st.plotly_chart(fig_donut, use_container_width=True)
-            else: st.info("Sem dados de faixas.")
-        with col_graf2:
-            st.subheader("📈 Frequência de Treinos")
-            if dados_freq:
-                df_freq = pd.DataFrame(dados_freq, columns=['data', 'total'])
-                fig_area = px.area(df_freq, x='data', y='total', markers=True, color_discrete_sequence=['#FF4B4B'])
-                st.plotly_chart(fig_area, use_container_width=True)
-            else: st.info("Sem treinos nos últimos 7 dias.")
+            else: st.info("Sem dados.")
+
         st.divider()
         
-        # === RANKING DE ASSIDUIDADE SEPARADO ===
+        # === RANKING DE ASSIDUIDADE (SEPARADO) ===
         st.subheader("🏆 Ranking dos Casca-Grossas (Este Mês)")
         
-        q_base = """
+        q_base_rank = """
             SELECT a.nome, COUNT(p.id) as total 
             FROM presencas p 
             JOIN alunos a ON p.id_aluno = a.id 
@@ -466,27 +503,25 @@ def sistema_principal():
         
         with col_r_adulto:
             st.markdown("### 🦍 Adultos")
-            q_adulto = q_base + " AND a.data_nascimento <= CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
+            q_adulto = q_base_rank + " AND a.data_nascimento <= CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
             rank_ad = executar_query(q_adulto, fetch=True)
             if rank_ad:
                 c_ad = rank_ad[0]
                 st.info(f"🥇 **{c_ad['nome'].strip()}** ({c_ad['total']} treinos)")
                 for i, r in enumerate(rank_ad[1:], start=2):
                     st.write(f"**{i}º** {r['nome'].strip()} - {r['total']}")
-            else:
-                st.info("Sem treinos de adultos este mês.")
+            else: st.info("Sem dados.")
 
         with col_r_kids:
             st.markdown("### 🦁 Kids")
-            q_kids = q_base + " AND a.data_nascimento > CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
+            q_kids = q_base_rank + " AND a.data_nascimento > CURRENT_DATE - INTERVAL '16 years' GROUP BY a.nome ORDER BY total DESC LIMIT 5"
             rank_kd = executar_query(q_kids, fetch=True)
             if rank_kd:
                 c_kd = rank_kd[0]
                 st.info(f"🥇 **{c_kd['nome'].strip()}** ({c_kd['total']} treinos)")
                 for i, r in enumerate(rank_kd[1:], start=2):
                     st.write(f"**{i}º** {r['nome'].strip()} - {r['total']}")
-            else:
-                st.info("Sem treinos kids este mês.")
+            else: st.info("Sem dados.")
             
         st.divider()
         
@@ -592,7 +627,7 @@ def sistema_principal():
                         novo_id = executar_query(q, (nome, nasc, faixa, graus, id_t, resp, tel_limpo, d_faixa, d_grau), fetch=True)[0][0]
                         executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_nova, graus_nova, data_mudanca, motivo) 
                                           VALUES (%s, %s, %s, %s, 'Cadastro Manual')""", (novo_id, faixa, graus, d_grau))
-                        st.cache_data.clear() # LIMPA CACHE APÓS CADASTRO
+                        st.cache_data.clear()
                         st.toast("Cadastrado com sucesso!", icon="✅")
                         st.rerun()
         else:
@@ -611,7 +646,7 @@ def sistema_principal():
                     for _, r in df_up.iterrows():
                         q_up = """UPDATE alunos SET nome=%s, data_nascimento=%s, faixa=%s, graus=%s, data_faixa=%s, data_ultimo_grau=%s, nome_responsavel=%s, telefone=%s WHERE id=%s"""
                         executar_query(q_up, (r['Nome'], r['Nascimento'], r['Faixa'], r['Graus'], r['Data Faixa'], r['Data Último Grau'], r['Responsável'], r['Telefone'], r['ID']))
-                    st.cache_data.clear() # LIMPA CACHE APÓS UPDATE
+                    st.cache_data.clear()
                     st.toast("Tabela atualizada!", icon="💾")
                     time.sleep(1)
                     st.rerun()
@@ -639,7 +674,7 @@ def sistema_principal():
                             novo_grau = graus_atual + 1
                             executar_query("UPDATE alunos SET graus = %s, data_ultimo_grau = CURRENT_DATE WHERE id = %s", (novo_grau, id_alvo))
                             executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_anterior, graus_anterior, faixa_nova, graus_nova, motivo) VALUES (%s, %s, %s, %s, %s, 'Adição de Grau')""", (id_alvo, faixa_atual, graus_atual, faixa_atual, novo_grau))
-                            st.cache_data.clear() # LIMPA CACHE APÓS GRAU
+                            st.cache_data.clear()
                             st.toast(f"Grau adicionado!", icon="🎉")
                             time.sleep(1)
                             st.rerun()
@@ -650,7 +685,7 @@ def sistema_principal():
                             else:
                                 executar_query("UPDATE alunos SET faixa = %s, graus = 0, data_faixa = CURRENT_DATE, data_ultimo_grau = CURRENT_DATE WHERE id = %s", (nova_faixa_promo, id_alvo))
                                 executar_query("""INSERT INTO historico_graduacao (id_aluno, faixa_anterior, graus_anterior, faixa_nova, graus_nova, motivo) VALUES (%s, %s, %s, %s, 0, 'Promoção de Faixa')""", (id_alvo, faixa_atual, graus_atual, nova_faixa_promo))
-                                st.cache_data.clear() # LIMPA CACHE APÓS FAIXA
+                                st.cache_data.clear()
                                 st.toast(f"Promovido para {nova_faixa_promo}!", icon="🥋")
                                 time.sleep(1)
                                 st.rerun()
@@ -691,7 +726,7 @@ def sistema_principal():
                     if st.form_submit_button("✅ Registrar Presenças"):
                         for id_a in pres: 
                             executar_query("INSERT INTO presencas (id_aluno, data_aula) VALUES (%s, %s)", (id_a, data_aula_manual))
-                        st.cache_data.clear() # LIMPA CACHE APÓS CHAMADA
+                        st.cache_data.clear()
                         st.toast(f"{len(pres)} presenças registradas para {data_aula_manual.strftime('%d/%m')}!", icon="✅")
             else: st.warning("Não há alunos ativos nesta turma.")
             
